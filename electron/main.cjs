@@ -19,7 +19,7 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
     },
-    icon: path.join(__dirname, '../public/favicon.svg'),
+    icon: path.join(__dirname, '../public/icon.png'),
     show: false,
   });
 

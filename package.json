@@ -45,6 +45,7 @@
   "build": {
     "appId": "com.lockbox.app",
     "productName": "LockBox",
+    "icon": "public/icon.png",
     "directories": {
       "output": "dist-electron"
     },
