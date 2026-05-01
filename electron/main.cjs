@@ -1,0 +1,67 @@
+const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const path = require('path');
+const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+
+let mainWindow;
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
+    title: 'LockBox',
+    backgroundColor: '#070B14',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+    icon: path.join(__dirname, '../public/favicon.svg'),
+    show: false,
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+  });
+
+  if (isDev) {
+    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.webContents.openDevTools();
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+  }
+
+  // Open external links in browser
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  mainWindow.on('closed', () => { mainWindow = null; });
+}
+
+app.whenReady().then(() => {
+  createWindow();
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+
+// Security: prevent new window creation
+app.on('web-contents-created', (_, contents) => {
+  contents.on('will-navigate', (event, url) => {
+    const distDir = `file://${path.join(__dirname, '../dist').replace(/\\/g, '/')}`;
+    const allowedDev  = isDev && url.startsWith('http://localhost:5173');
+    const allowedProd = !isDev && url.startsWith(distDir);
+    if (!allowedDev && !allowedProd) {
+      event.preventDefault();
+    }
+  });
+});
