@@ -42,6 +42,13 @@ interface VaultMeta {
 export interface VaultStore {
   // Auth
   isUnlocked: boolean;
+  /**
+   * Soft-lock: the vault is technically unlocked (DEK still in RAM) but the UI
+   * is blocked by the biometric gate. Set when the app goes to the background
+   * with biometrics enabled. Cleared on successful biometric re-authentication.
+   * On biometric failure/cancel → hard lock (isUnlocked = false, DEK wiped).
+   */
+  isSoftLocked: boolean;
   isSetup: boolean;
   masterPassword: string;      // cleared when not needed for re-auth
   dek: CryptoKey | null;       // Data Encryption Key in use
@@ -80,6 +87,10 @@ export interface VaultStore {
   unlock: (password: string) => Promise<boolean>;
   unlockWithRecovery: (recoveryKey: string) => Promise<boolean>;
   lock: () => void;
+  /** Engage the soft lock: DEK stays in RAM, UI is blocked by biometric gate. */
+  softLock: () => void;
+  /** Release the soft lock after successful biometric auth. */
+  softUnlock: () => void;
   saveVault: () => Promise<void>;
   addEntry: (entry: Omit<VaultEntry, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>;
   updateEntry: (id: string, updates: Partial<VaultEntry>) => Promise<void>;
@@ -108,6 +119,7 @@ const _initLockout = loadLockoutState();
 
 export const useVaultStore = create<VaultStore>((set, get) => ({
   isUnlocked: false,
+  isSoftLocked: false,
   isSetup: vaultExists(),
   masterPassword: '',        // always '' — real password kept in _sessionPw
   dek: null,
@@ -352,13 +364,14 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     }
   },
 
-  // ── Lock ─────────────────────────────────────────────────────────────────
+  // ── Lock (Hard Lock — wipes DEK from memory) ──────────────────────────────
   lock: () => {
     _sessionPw = '';
     const { lockTimer } = get();
     if (lockTimer) clearTimeout(lockTimer);
     set({
       isUnlocked: false,
+      isSoftLocked: false,
       masterPassword: '',
       dek: null,
       salt: null,
@@ -372,6 +385,22 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       isSetup: vaultExists(),
       unlockedViaRecovery: false,
     });
+  },
+
+  // ── Soft Lock (DEK stays in RAM, UI blocked by biometric gate) ────────────
+  softLock: () => {
+    // Pause the auto-lock timer while the gate is showing, to avoid a
+    // double-lock scenario during the biometric prompt flow.
+    const { lockTimer } = get();
+    if (lockTimer) clearTimeout(lockTimer);
+    set({ isSoftLocked: true, lockTimer: null });
+  },
+
+  // ── Soft Unlock (biometric passed — resume session) ───────────────────────
+  softUnlock: () => {
+    set({ isSoftLocked: false });
+    // Restart the inactivity timer now that the user is back.
+    get().resetActivity();
   },
 
   // ── Save ─────────────────────────────────────────────────────────────────
@@ -576,3 +605,4 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   triggerAddEntry: () => set({ currentView: 'vault', openAddEntryModal: true }),
   clearAddEntryModal: () => set({ openAddEntryModal: false }),
 }));
+

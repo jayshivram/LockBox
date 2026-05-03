@@ -1,6 +1,6 @@
 {
   "name": "lockbox",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "LockBox - Offline Local Password Manager",
   "main": "electron/main.cjs",
   "scripts": {

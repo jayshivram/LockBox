@@ -145,8 +145,14 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4"
       style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
-      <div className="w-full md:max-w-lg glass-card rounded-t-2xl md:rounded-2xl animate-slide-up overflow-hidden"
-        style={{ maxHeight: '95dvh', display: 'flex', flexDirection: 'column' }}>
+      <div className="w-full md:max-w-lg glass-card rounded-t-2xl md:rounded-2xl animate-slide-up"
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          // Cap height — do NOT force height so the footer naturally stays pinned
+          maxHeight: '92dvh',
+          overflow: 'hidden',
+        }}>
 
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-5 border-b"
@@ -161,7 +167,11 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+        {/* Scrollable body — min-h-0 is CRITICAL on mobile flex layouts;
+             without it, the flex child can't shrink below its content size
+             and the footer gets pushed off screen. */}
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4"
+          style={{ overscrollBehavior: 'contain', minHeight: 0 }}>
           {/* Type selector */}
           <div>
             <label className="label-text">Entry Type</label>
@@ -658,11 +668,18 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
           </div>
         </div>
 
-        {/* Footer */}
+        {/* Footer — flex-shrink-0 ensures it's always visible at bottom */}
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t"
-          style={{ borderColor: 'var(--c-border)' }}>
+          style={{
+            flexShrink: 0,
+            borderColor: 'var(--c-border)',
+            background: 'var(--c-card)',
+            // Account for Android navigation bar / home indicator
+            paddingBottom: 'max(1rem, env(safe-area-inset-bottom))',
+          }}>
           <button onClick={onClose} className="btn-ghost">Cancel</button>
-          <button onClick={handleSave} disabled={!name.trim() || saving} className="btn-primary">
+          <button onClick={handleSave} disabled={!name.trim() || saving} className="btn-primary"
+            style={{ minHeight: 44 }}>
             <Plus size={15} />
             {saving ? 'Saving...' : mode === 'add' ? 'Add Entry' : 'Save Changes'}
           </button>
