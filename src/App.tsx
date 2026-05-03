@@ -49,6 +49,6 @@ export default function App() {
     return <BiometricGate onPass={() => setBiometricCleared(true)} />;
   }
 
-  if (!isUnlocked) return <UnlockScreen />;
+  if (!isUnlocked) return <UnlockScreen biometricVerified={isNative() && settings.biometricEnabled && biometricCleared} />;
   return <Layout />;
 }

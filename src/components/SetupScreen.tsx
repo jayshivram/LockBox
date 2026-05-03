@@ -30,9 +30,11 @@ export function SetupScreen() {
   ];
 
   return (
-    <div className="h-full vault-bg grid-pattern flex items-center justify-center p-4 relative overflow-hidden">
-      <div className="absolute top-1/3 right-1/3 w-80 h-80 rounded-full opacity-5"
+    <div className="h-full vault-bg grid-pattern overflow-y-auto relative">
+      <div className="absolute top-1/3 right-1/3 w-80 h-80 rounded-full opacity-5 pointer-events-none"
         style={{ background: 'radial-gradient(circle, #F0B429, transparent)' }} />
+
+      <div className="min-h-full flex flex-col items-center justify-center p-4">
 
       <div className="w-full max-w-lg animate-fade-in">
         {/* Header */}
@@ -155,6 +157,7 @@ export function SetupScreen() {
         <p className="text-center text-xs mt-6" style={{ color: 'var(--c-text-g)' }}>
           AES-256-GCM · PBKDF2 key derivation · DEK wrapping · Recovery key · Zero knowledge
         </p>
+      </div>
       </div>
     </div>
   );

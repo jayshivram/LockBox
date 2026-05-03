@@ -33,7 +33,8 @@ export function BiometricGate({ onPass }: Props) {
   }, []);
 
   return (
-    <div className="fixed inset-0 flex flex-col items-center justify-center vault-bg px-8 z-50">
+    <div className="fixed inset-0 vault-bg z-50" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+      <div className="h-full flex flex-col items-center justify-center px-8">
       {/* Logo */}
       <div className="flex items-center gap-3 mb-12">
         <div className="w-14 h-14 rounded-2xl flex items-center justify-center"
@@ -80,6 +81,7 @@ export function BiometricGate({ onPass }: Props) {
       >
         Use master password instead
       </button>
+      </div>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState } from 'react';
-import { AlertTriangle, X, LayoutDashboard, Key, Zap, Shield, FileText, Settings as SettingsIcon } from 'lucide-react';
+import { AlertTriangle, X, LayoutDashboard, Key, Shield, FileText, Settings as SettingsIcon } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { Dashboard } from './Dashboard';
 import { VaultList } from './VaultList';
@@ -14,28 +14,31 @@ import type { View } from '../types';
 const WARN_BEFORE_MS = 30_000; // show warning 30 seconds before lock
 
 const BOTTOM_NAV_ITEMS: { id: View; label: string; icon: React.ElementType }[] = [
-  { id: 'dashboard', label: 'Home',      icon: LayoutDashboard },
-  { id: 'vault',     label: 'Vault',     icon: Key },
-  { id: 'generator', label: 'Generate',  icon: Zap },
-  { id: 'totp',      label: 'Auth',      icon: Shield },
-  { id: 'notes',     label: 'Notes',     icon: FileText },
-  { id: 'settings',  label: 'Settings',  icon: SettingsIcon },
+  { id: 'dashboard', label: 'Home',     icon: LayoutDashboard },
+  { id: 'vault',     label: 'Vault',    icon: Key },
+  { id: 'totp',      label: 'Auth',     icon: Shield },
+  { id: 'notes',     label: 'Notes',    icon: FileText },
+  { id: 'settings',  label: 'Settings', icon: SettingsIcon },
 ];
 
 function BottomNav() {
   const { currentView, setView } = useVaultStore();
   return (
     <nav className="mobile-bottom-nav md:hidden">
-      {BOTTOM_NAV_ITEMS.map(({ id, label, icon: Icon }) => (
-        <button
-          key={id}
-          onClick={() => setView(id)}
-          className={`mobile-bottom-nav-item ${currentView === id ? 'active' : ''}`}
-        >
-          <Icon size={20} />
-          <span>{label}</span>
-        </button>
-      ))}
+      {BOTTOM_NAV_ITEMS.map(({ id, label, icon: Icon }) => {
+        const isActive = currentView === id;
+        return (
+          <button
+            key={id}
+            onClick={() => setView(id)}
+            className={`mobile-bottom-nav-item ${isActive ? 'active' : ''}`}
+          >
+            <Icon size={20} />
+            {isActive && <span>{label}</span>}
+            {isActive && <span className="mobile-nav-dot" aria-hidden="true" />}
+          </button>
+        );
+      })}
     </nav>
   );
 }

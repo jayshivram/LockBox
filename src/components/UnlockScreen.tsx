@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { Lock, Eye, EyeOff, Shield, AlertCircle, Loader2, KeyRound, ArrowLeft, HelpCircle } from 'lucide-react';
+import { Lock, Eye, EyeOff, Shield, AlertCircle, Loader2, KeyRound, ArrowLeft, HelpCircle, CheckCircle2 } from 'lucide-react';
 import { useVaultStore } from '../store/vaultStore';
 import { loadEncryptedVault } from '../utils/crypto';
 
-export function UnlockScreen() {
+export function UnlockScreen({ biometricVerified = false }: { biometricVerified?: boolean }) {
   const [password, setPassword]     = useState('');
   const [showPassword, setShowPw]   = useState(false);
   const [mode, setMode]             = useState<'password' | 'recovery'>('password');
@@ -56,26 +56,39 @@ export function UnlockScreen() {
   };
 
   return (
-    <div className="h-full vault-bg grid-pattern flex items-center justify-center p-4 relative overflow-hidden">
-      <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full opacity-5"
-        style={{ background: 'radial-gradient(circle, #F0B429, transparent)' }} />
-      <div className="absolute bottom-1/4 right-1/4 w-64 h-64 rounded-full opacity-3"
-        style={{ background: 'radial-gradient(circle, #3B82F6, transparent)' }} />
+    <div className="h-full vault-bg grid-pattern overflow-y-auto relative">
+      {/* Centered amber radial — draws the eye to the form */}
+      <div className="absolute inset-0 pointer-events-none"
+        style={{ background: 'radial-gradient(ellipse 70% 50% at 50% 35%, var(--c-accent-bgm), transparent)' }} />
 
-      <div className="w-full max-w-md animate-fade-in">
+      <div className="min-h-full flex flex-col items-center justify-center p-4">
+
+      <div className="w-full max-w-sm animate-fade-in">
         {/* Logo */}
-        <div className="text-center mb-10">
-          <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl mb-4 gold-glow lock-icon-anim"
-            style={{ background: 'linear-gradient(135deg, var(--c-card-solid) 0%, var(--c-card-solid) 100%)', border: '1px solid var(--c-accent-bd)' }}>
-            <Lock size={36} color="#F0B429" />
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl mb-5 lock-icon-anim"
+            style={{
+              background: 'var(--c-accent-bgm)',
+              border: '1px solid var(--c-accent-bds)',
+              boxShadow: '0 0 0 6px var(--c-accent-bg), 0 8px 32px rgba(240, 180, 41, 0.18)',
+            }}>
+            <Lock size={36} color="var(--c-accent)" />
           </div>
-          <h1 className="text-3xl font-bold tracking-tight" style={{ color: 'var(--c-accent)' }}>LockBox</h1>
-          <p className="text-sm mt-1" style={{ color: 'var(--c-text-m)' }}>
-            {mode === 'recovery' ? 'Enter your recovery key to unlock.' : 'Your vault is locked. Enter master password to continue.'}
+          <h1 className="text-2xl font-bold tracking-tight" style={{ color: 'var(--c-text)' }}>LockBox</h1>
+          <p className="text-sm mt-1.5" style={{ color: 'var(--c-text-m)' }}>
+            {biometricVerified
+              ? 'Biometric confirmed. Enter master password to decrypt.'
+              : mode === 'recovery' ? 'Enter your recovery key to unlock.' : 'Your vault is locked. Enter master password to continue.'}
           </p>
+          {biometricVerified && (
+            <div className="inline-flex items-center gap-1.5 mt-3 px-3 py-1.5 rounded-full text-xs font-semibold"
+              style={{ background: 'rgba(34, 197, 94, 0.1)', border: '1px solid rgba(34, 197, 94, 0.25)', color: '#22C55E' }}>
+              <CheckCircle2 size={12} /> Identity verified · Step 2 of 2
+            </div>
+          )}
         </div>
 
-        <div className="glass-card rounded-2xl p-8">
+        <div className="glass-card rounded-2xl p-7">
           {mode === 'password' ? (
             <form onSubmit={handleUnlock} className="space-y-5">
               <div>
@@ -189,9 +202,20 @@ export function UnlockScreen() {
           )}
         </div>
 
-        <p className="text-center text-xs mt-6" style={{ color: 'var(--c-text-g)' }}>
-          🔒 Zero-knowledge AES-256-GCM · DEK wrapping · Stored locally only
-        </p>
+        {/* Trust bar */}
+        <div className="mt-6 flex items-center justify-center gap-4">
+          {[
+            { label: 'AES-256-GCM', dot: 'var(--c-accent)' },
+            { label: 'Zero-knowledge', dot: '#22C55E' },
+            { label: 'Local-only', dot: '#60A5FA' },
+          ].map(({ label, dot }) => (
+            <span key={label} className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--c-text-f)' }}>
+              <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: dot }} />
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
       </div>
     </div>
   );

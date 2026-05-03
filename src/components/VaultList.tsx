@@ -4,7 +4,7 @@ import {
   Edit3, Globe, User, Key, Tag, Shield, Clock, ExternalLink,
   AlertTriangle, CheckCircle2, Loader2, Filter, Wifi, Lock, AlertCircle,
   ArrowUpDown, SortAsc, SortDesc, CreditCard, Fingerprint, Building2, FileText,
-  ArrowLeft
+  ArrowLeft, Zap
 } from 'lucide-react';
 import { useVaultStore } from '../store/vaultStore';
 import type { VaultStore } from '../store/vaultStore';
@@ -793,7 +793,7 @@ export function VaultList() {
   const {
     entries, searchQuery, setSearch, selectedCategory, setCategory,
     selectedEntryId, setSelectedEntry, activeFilterType, setActiveFilterType,
-    sortBy, setSortBy, openAddEntryModal, clearAddEntryModal, settings,
+    sortBy, setSortBy, openAddEntryModal, clearAddEntryModal, settings, setView,
   } = useVaultStore();
   const [addOpen, setAddOpen] = useState(false);
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
@@ -876,6 +876,9 @@ export function VaultList() {
             </div>
             <button onClick={() => setAddOpen(true)} className="btn-primary px-3 py-2.5 flex-shrink-0" title="New entry (Ctrl+N)">
               <Plus size={16} />
+            </button>
+            <button onClick={() => setView('generator')} className="btn-ghost px-3 py-2.5 flex-shrink-0 md:hidden" title="Password Generator">
+              <Zap size={16} />
             </button>
           </div>
 
