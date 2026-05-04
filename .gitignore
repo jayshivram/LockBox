@@ -1,7 +1,10 @@
 node_modules/
 dist/
 dist-electron/
-android/
+android/build/
+android/app/build/
+android/.gradle/
+android/capacitor-cordova-android-plugins/build/
 ios/
 .capacitor/
 *.local
