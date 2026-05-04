@@ -12,6 +12,7 @@ import { checkStrength } from '../utils/strength';
 import { copyToClipboard, checkPasswordBreach } from '../utils/crypto';
 import type { VaultEntry, Category } from '../types';
 import { EntryModal } from './EntryModal';
+import { requireInlineBiometric } from '../utils/capacitor';
 
 type SortOption = VaultStore['sortBy'];
 
@@ -66,7 +67,10 @@ function EntryIcon({ entry }: { entry: VaultEntry }) {
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   const { settings } = useVaultStore();
-  const handleCopy = () => {
+  const handleCopy = async () => {
+    const passed = await requireInlineBiometric(settings.biometricEnabled);
+    if (!passed) return;
+
     copyToClipboard(text, settings.clipboardClearSeconds * 1000);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -98,7 +102,30 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
   const [showCardPin, setShowCardPin] = useState(false);
   // Identity show/hide state
   const [showIdNumber, setShowIdNumber] = useState(false);
-  const { updateEntry, deleteEntry } = useVaultStore();
+  const { updateEntry, deleteEntry, settings } = useVaultStore();
+
+  /**
+   * Gate sensitive field reveals behind biometrics / device PIN.
+   * Hiding (current=true) is always instant — no auth needed.
+   * Revealing (current=false) triggers the biometric prompt.
+   */
+  const handleRevealToggle = useCallback(async (
+    current: boolean,
+    setter: (v: boolean) => void,
+  ) => {
+    if (current) {
+      setter(false); // hide is always free
+      return;
+    }
+    const passed = await requireInlineBiometric(settings.biometricEnabled);
+    if (passed) setter(true);
+  }, [settings.biometricEnabled]);
+
+  /** Gate the edit button behind biometrics / device PIN. */
+  const handleEdit = useCallback(async () => {
+    const passed = await requireInlineBiometric(settings.biometricEnabled);
+    if (passed) setEditOpen(true);
+  }, [settings.biometricEnabled]);
 
   const strength = entry.password ? checkStrength(entry.password) : null;
 
@@ -155,7 +182,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
             style={{ color: entry.isFavorite ? 'var(--c-accent)' : 'var(--c-text-f)' }}>
             <Star size={16} fill={entry.isFavorite ? 'var(--c-accent)' : 'none'} />
           </button>
-          <button onClick={() => setEditOpen(true)} className="p-2 rounded-lg transition-all"
+          <button onClick={handleEdit} className="p-2 rounded-lg transition-all"
             style={{ color: 'var(--c-text-m)' }} onMouseEnter={e => (e.currentTarget.style.color = 'var(--c-text)')}
             onMouseLeave={e => (e.currentTarget.style.color = 'var(--c-text-m)')}>
             <Edit3 size={16} />
@@ -203,7 +230,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                     {showPassword ? entry.password : '•'.repeat(Math.min(entry.password.length, 20))}
                   </span>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setShowPassword(s => !s)} className="p-1.5 rounded transition-all"
+                    <button onClick={() => handleRevealToggle(showPassword, setShowPassword)} className="p-1.5 rounded transition-all"
                       style={{ color: 'var(--c-text-m)' }}>
                       {showPassword ? <EyeOff size={13} /> : <Eye size={13} />}
                     </button>
@@ -255,7 +282,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                     {showAdminPassword ? entry.adminPassword : '•'.repeat(Math.min(entry.adminPassword.length, 20))}
                   </span>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setShowAdminPassword(s => !s)} className="p-1.5 rounded transition-all"
+                    <button onClick={() => handleRevealToggle(showAdminPassword, setShowAdminPassword)} className="p-1.5 rounded transition-all"
                       style={{ color: 'var(--c-text-m)' }}>
                       {showAdminPassword ? <EyeOff size={13} /> : <Eye size={13} />}
                     </button>
@@ -297,7 +324,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                     {showAccountNumber ? entry.accountNumber : '•'.repeat(Math.min(entry.accountNumber.length, 16))}
                   </span>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setShowAccountNumber(s => !s)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
+                    <button onClick={() => handleRevealToggle(showAccountNumber, setShowAccountNumber)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
                       {showAccountNumber ? <EyeOff size={13} /> : <Eye size={13} />}
                     </button>
                     <CopyButton text={entry.accountNumber} label="account number" />
@@ -317,7 +344,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                     {showRoutingNumber ? entry.routingNumber : '•'.repeat(Math.min(entry.routingNumber.length, 12))}
                   </span>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setShowRoutingNumber(s => !s)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
+                    <button onClick={() => handleRevealToggle(showRoutingNumber, setShowRoutingNumber)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
                       {showRoutingNumber ? <EyeOff size={13} /> : <Eye size={13} />}
                     </button>
                     <CopyButton text={entry.routingNumber} label="routing number" />
@@ -337,7 +364,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                     {showIban ? entry.iban : '•'.repeat(Math.min(entry.iban.length, 20))}
                   </span>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setShowIban(s => !s)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
+                    <button onClick={() => handleRevealToggle(showIban, setShowIban)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
                       {showIban ? <EyeOff size={13} /> : <Eye size={13} />}
                     </button>
                     <CopyButton text={entry.iban} label="IBAN" />
@@ -384,7 +411,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                         </p>
                       </div>
                       <div className="flex items-center gap-1">
-                        <button onClick={() => setShowCardNumber(s => !s)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
+                        <button onClick={() => handleRevealToggle(showCardNumber, setShowCardNumber)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
                           {showCardNumber ? <EyeOff size={13} /> : <Eye size={13} />}
                         </button>
                         <CopyButton text={entry.cardNumber} label="card number" />
@@ -410,7 +437,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                           </p>
                         </div>
                         <div className="flex items-center gap-1">
-                          <button onClick={() => setShowCardCvv(s => !s)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
+                          <button onClick={() => handleRevealToggle(showCardCvv, setShowCardCvv)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
                             {showCardCvv ? <EyeOff size={13} /> : <Eye size={13} />}
                           </button>
                           <CopyButton text={entry.cardCvv} label="CVV" />
@@ -427,7 +454,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                         </p>
                       </div>
                       <div className="flex items-center gap-1">
-                        <button onClick={() => setShowCardPin(s => !s)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
+                        <button onClick={() => handleRevealToggle(showCardPin, setShowCardPin)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
                           {showCardPin ? <EyeOff size={13} /> : <Eye size={13} />}
                         </button>
                         <CopyButton text={entry.cardPin} label="card PIN" />
@@ -478,7 +505,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                     {showPassword ? entry.password : '•'.repeat(Math.min(entry.password.length, 20))}
                   </span>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setShowPassword(s => !s)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
+                    <button onClick={() => handleRevealToggle(showPassword, setShowPassword)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
                       {showPassword ? <EyeOff size={13} /> : <Eye size={13} />}
                     </button>
                     <CopyButton text={entry.password} label="password" />
@@ -519,7 +546,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                     {showIdNumber ? entry.idNumber : '•'.repeat(Math.min(entry.idNumber.length, 12))}
                   </span>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setShowIdNumber(s => !s)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
+                    <button onClick={() => handleRevealToggle(showIdNumber, setShowIdNumber)} className="p-1.5 rounded transition-all" style={{ color: 'var(--c-text-m)' }}>
                       {showIdNumber ? <EyeOff size={13} /> : <Eye size={13} />}
                     </button>
                     <CopyButton text={entry.idNumber} label="document number" />
@@ -652,7 +679,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                     {showPassword ? entry.password : '•'.repeat(Math.min(entry.password.length, 20))}
                   </span>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setShowPassword(s => !s)} className="p-1.5 rounded transition-all"
+                    <button onClick={() => handleRevealToggle(showPassword, setShowPassword)} className="p-1.5 rounded transition-all"
                       style={{ color: 'var(--c-text-m)' }}>
                       {showPassword ? <EyeOff size={13} /> : <Eye size={13} />}
                     </button>

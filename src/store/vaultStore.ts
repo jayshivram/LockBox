@@ -8,6 +8,7 @@ import {
   generateSalt, generateRecoveryKey, normaliseRecoveryKey, bufferToBase64,
   saveLockoutState, loadLockoutState, clearLockoutState,
 } from '../utils/crypto';
+import { backupToPreferences } from '../utils/storage';
 import { generateId } from '../utils/generator';
 
 // Held outside Zustand so it's never visible in React DevTools or state snapshots.
@@ -18,7 +19,7 @@ const DEFAULT_SETTINGS: VaultSettings = {
   theme: 'dark',
   clipboardClearSeconds: 15,
   requireMasterPasswordOnResume: true,
-  biometricEnabled: false,
+  biometricEnabled: localStorage.getItem('lockbox_biometric') !== 'false', // Defaults to true if null
   wipeAfterAttempts: 0,
 };
 
@@ -232,12 +233,18 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         : null;
 
       _sessionPw = password;
+      const loadedSettings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+      // Force sync the setting out to unencrypted storage so cold-start biometrics work reliably
+      const biometricStr = loadedSettings.biometricEnabled ? 'true' : 'false';
+      localStorage.setItem('lockbox_biometric', biometricStr);
+      backupToPreferences('lockbox_biometric', biometricStr);
+
       set({
         isUnlocked: true,
         masterPassword: '',
         dek, salt: saltPw, vaultMeta: meta,
         entries: data.entries || [],
-        settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) },
+        settings: loadedSettings,
         isLoading: false,
         currentView: 'dashboard',
         failedAttempts: 0, lockoutUntil: 0,
@@ -463,6 +470,11 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   // ── Settings ──────────────────────────────────────────────────────────────
   updateSettings: async (s) => {
     set(st => ({ settings: { ...st.settings, ...s } }));
+    if (s.biometricEnabled !== undefined) {
+      const biometricStr = s.biometricEnabled ? 'true' : 'false';
+      localStorage.setItem('lockbox_biometric', biometricStr);
+      backupToPreferences('lockbox_biometric', biometricStr);
+    }
     await get().saveVault();
     get().resetActivity(); // restart lock timer with new duration
   },

@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { FileText, Plus, Eye, EyeOff, Trash2, Edit3, Save, X, Lock, ArrowLeft } from 'lucide-react';
 import { useVaultStore } from '../store/vaultStore';
+import { requireInlineBiometric } from '../utils/capacitor';
 
 type MobileView = 'list' | 'detail' | 'add';
 
 export function SecureNotes() {
-  const { entries, addEntry, updateEntry, deleteEntry } = useVaultStore();
+  const { entries, addEntry, updateEntry, deleteEntry, settings } = useVaultStore();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showContent, setShowContent] = useState<Record<string, boolean>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -16,6 +17,30 @@ export function SecureNotes() {
   const [mobileView, setMobileView] = useState<MobileView>('list');
 
   const notes = entries.filter(e => e.type === 'note');
+
+  /**
+   * Gate note content reveal behind biometrics / device PIN.
+   * Hiding is always instant; revealing requires auth.
+   */
+  const handleRevealNote = useCallback(async (id: string, currentlyShown: boolean) => {
+    if (currentlyShown) {
+      setShowContent(prev => ({ ...prev, [id]: false }));
+      return;
+    }
+    const passed = await requireInlineBiometric(settings.biometricEnabled);
+    if (passed) {
+      setShowContent(prev => ({ ...prev, [id]: true }));
+    }
+  }, [settings.biometricEnabled]);
+
+  /** Gate edit behind biometrics / device PIN. */
+  const handleStartEdit = useCallback(async (id: string, content: string) => {
+    const passed = await requireInlineBiometric(settings.biometricEnabled);
+    if (!passed) return;
+    setEditingId(id);
+    setEditContent(content);
+    setShowContent(prev => ({ ...prev, [id]: true }));
+  }, [settings.biometricEnabled]);
 
   const handleSelectNote = (id: string) => {
     setSelectedId(id);
@@ -42,12 +67,6 @@ export function SecureNotes() {
     });
     setNewTitle(''); setNewContent(''); setShowAdd(false);
     setMobileView('list');
-  };
-
-  const startEdit = (id: string, content: string) => {
-    setEditingId(id);
-    setEditContent(content);
-    setShowContent(prev => ({ ...prev, [id]: true }));
   };
 
   const saveEdit = async () => {
@@ -138,12 +157,12 @@ export function SecureNotes() {
           {mobileView === 'detail' && selected && editingId !== selected.id && (
             <div className="flex items-center gap-1">
               <button
-                onClick={() => setShowContent(prev => ({ ...prev, [selected.id]: !prev[selected.id] }))}
+                onClick={() => handleRevealNote(selected.id, !!showContent[selected.id])}
                 className="p-2 rounded-lg transition-all"
                 style={{ color: 'var(--c-text-m)' }}>
                 {showContent[selected.id] ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
-              <button onClick={() => startEdit(selected.id, selected.notes || '')} className="p-2 rounded-lg transition-all"
+              <button onClick={() => handleStartEdit(selected.id, selected.notes || '')} className="p-2 rounded-lg transition-all"
                 style={{ color: 'var(--c-text-m)' }}>
                 <Edit3 size={16} />
               </button>
@@ -211,7 +230,7 @@ export function SecureNotes() {
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => setShowContent(prev => ({ ...prev, [selected.id]: !prev[selected.id] }))}
+                    onClick={() => handleRevealNote(selected.id, !!showContent[selected.id])}
                     className="btn-ghost text-sm">
                     {showContent[selected.id] ? <EyeOff size={14} /> : <Eye size={14} />}
                     {showContent[selected.id] ? 'Hide' : 'Show'}
@@ -226,7 +245,7 @@ export function SecureNotes() {
                       </button>
                     </>
                   ) : (
-                    <button onClick={() => startEdit(selected.id, selected.notes || '')} className="btn-ghost text-sm">
+                    <button onClick={() => handleStartEdit(selected.id, selected.notes || '')} className="btn-ghost text-sm">
                       <Edit3 size={14} /> Edit
                     </button>
                   )}
@@ -246,7 +265,7 @@ export function SecureNotes() {
               {/* Mobile show/hide toggle */}
               <div className="md:hidden">
                 <button
-                  onClick={() => setShowContent(prev => ({ ...prev, [selected.id]: !prev[selected.id] }))}
+                  onClick={() => handleRevealNote(selected.id, !!showContent[selected.id])}
                   className="btn-ghost text-sm w-full justify-center">
                   {showContent[selected.id] ? <EyeOff size={14} /> : <Eye size={14} />}
                   {showContent[selected.id] ? 'Hide content' : 'Reveal content'}

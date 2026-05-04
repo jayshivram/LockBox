@@ -18,6 +18,14 @@ const config: CapacitorConfig = {
       enable: true,
       imageName: 'Default',
     },
+    SplashScreen: {
+      launchShowDuration: 2500,
+      launchAutoHide: true,
+      backgroundColor: '#0d1740',
+      androidSplashResourceName: 'splash',
+      androidScaleType: 'CENTER_CROP',
+      showSpinner: false,
+    },
   },
 };
 

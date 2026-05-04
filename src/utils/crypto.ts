@@ -1,4 +1,5 @@
 import type { EncryptedVault, VaultData } from '../types';
+import { backupToPreferences, removeFromPreferences } from './storage';
 
 const ITERATIONS = 310_000;
 const VAULT_KEY   = 'lockbox_vault';
@@ -145,7 +146,10 @@ export async function decryptVault(encrypted: EncryptedVault, key: CryptoKey): P
 // ─── localStorage persistence ─────────────────────────────────────────────────
 
 export function saveEncryptedVault(vault: EncryptedVault): void {
-  localStorage.setItem(VAULT_KEY, JSON.stringify(vault));
+  const serialised = JSON.stringify(vault);
+  localStorage.setItem(VAULT_KEY, serialised);
+  // Mirror to Android Preferences so vault survives app updates / reinstalls
+  backupToPreferences(VAULT_KEY, serialised);
 }
 
 export function loadEncryptedVault(): EncryptedVault | null {
@@ -187,6 +191,10 @@ export function clearLockoutState(): void {
 export function deleteVault(): void {
   localStorage.removeItem(VAULT_KEY);
   localStorage.removeItem(SALT_KEY);
+  localStorage.removeItem('lockbox_biometric');
+  // Remove from Preferences backup as well
+  removeFromPreferences(VAULT_KEY);
+  removeFromPreferences('lockbox_biometric');
 }
 
 export function vaultExists(): boolean {

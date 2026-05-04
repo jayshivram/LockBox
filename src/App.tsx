@@ -5,9 +5,14 @@ import { SetupScreen } from './components/SetupScreen';
 import { Layout } from './components/Layout';
 import { BiometricGate } from './components/BiometricGate';
 import { isNative, setupPrivacyScreen, setupAppStateListener } from './utils/capacitor';
+import { restoreVaultFromBackup } from './utils/storage';
 
 export default function App() {
   const { isUnlocked, isSoftLocked, isSetup, settings, lock, softLock, softUnlock } = useVaultStore();
+
+  // `ready` is false until the pre-boot Preferences restore completes.
+  // This prevents any store reads from racing with the restore on native.
+  const [ready, setReady] = useState(!isNative());
 
   /**
    * `biometricCleared` tracks whether the biometric gate has been passed for
@@ -20,6 +25,20 @@ export default function App() {
    * password on successful biometric scan.
    */
   const [biometricCleared, setBiometricCleared] = useState(false);
+
+  // Restore vault data from Android Preferences backup before anything else
+  // reads localStorage. Completes in <100 ms on native; instant on web.
+  useEffect(() => {
+    if (!isNative()) return; // already set to true via useState initialiser
+    restoreVaultFromBackup().then(() => {
+      // Re-sync the biometric setting from localStorage (may have been restored)
+      const biometricEnabled = localStorage.getItem('lockbox_biometric') !== 'false';
+      useVaultStore.setState(s => ({
+        settings: { ...s.settings, biometricEnabled },
+      }));
+      setReady(true);
+    });
+  }, []);
 
   // Track whether the app is currently in the foreground to avoid firing the
   // biometric prompt twice in rapid succession on fast resume.
@@ -78,19 +97,21 @@ export default function App() {
 
   // ── Render logic ────────────────────────────────────────────────────────────
 
-  if (!isSetup) return <SetupScreen />;
-
-  // ── SOFT-LOCK: App resumed from background ──────────────────────────────────
-  // The vault data is still in RAM. Show biometric gate; on success → resume.
-  // On fallback → hard lock → master password screen.
-  if (isSoftLocked) {
+  // Wait for the Preferences restore to complete before rendering anything.
+  // On web this is always true immediately; on native it takes <100 ms.
+  if (!ready) {
     return (
-      <BiometricGate
-        onSuccess={() => softUnlock()}
-        onFallback={() => lock()}
+      <div
+        style={{
+          width: '100vw',
+          height: '100vh',
+          background: '#0d1740',
+        }}
       />
     );
   }
+
+  if (!isSetup) return <SetupScreen />;
 
   // ── HARD-LOCK / COLD START with biometrics enabled ──────────────────────────
   // The user must pass biometrics FIRST, then enter the master password.
@@ -115,5 +136,16 @@ export default function App() {
     );
   }
 
-  return <Layout />;
+  return (
+    <>
+      <Layout />
+      {isSoftLocked && (
+        <BiometricGate
+          isSoftLock={true}
+          onSuccess={() => softUnlock()}
+          onFallback={() => lock()}
+        />
+      )}
+    </>
+  );
 }

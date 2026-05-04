@@ -4,10 +4,11 @@
  * when not running inside a native Capacitor container.
  */
 
+import { Capacitor } from '@capacitor/core';
+
 /** Returns true when running inside a Capacitor native app (iOS / Android). */
 export function isNative(): boolean {
-  const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
-  return typeof cap?.isNativePlatform === 'function' && cap.isNativePlatform();
+  return Capacitor.isNativePlatform();
 }
 
 /**
@@ -41,7 +42,7 @@ export type BiometricResult =
  * - Returns a typed result so the caller can react to *why* it failed, instead
  *   of treating every failure identically.
  */
-export async function checkBiometric(): Promise<BiometricResult> {
+export async function checkBiometric(options?: { cancelTitle?: string }): Promise<BiometricResult> {
   if (!isNative()) return { success: false, reason: 'unavailable' };
   try {
     const { BiometricAuth, BiometryErrorType } = await import('@aparajita/capacitor-biometric-auth');
@@ -54,7 +55,7 @@ export async function checkBiometric(): Promise<BiometricResult> {
 
     await BiometricAuth.authenticate({
       reason: 'Verify your identity to access LockBox',
-      cancelTitle: 'Use Master Password',
+      cancelTitle: options?.cancelTitle || 'Use Master Password',
       // KEY FIX: Allow Android to offer PIN/Pattern if fingerprint fails.
       // This is the primary reason the prompt was "hit or miss" — the OS was
       // dismissing it silently when the sensor was unresponsive, with no fallback.
@@ -113,16 +114,45 @@ export function setupAppStateListener(
   onForeground?: () => void,
 ): (() => void) | undefined {
   if (!isNative()) return undefined;
-  let cleanup: (() => void) | undefined;
+  
+  let isCancelled = false;
+  let pluginHandle: any = null;
+
   import('@capacitor/app').then(({ App }) => {
-    const handle = App.addListener('appStateChange', (state) => {
+    if (isCancelled) return;
+    
+    App.addListener('appStateChange', (state) => {
       if (!state.isActive) {
         onBackground();
       } else {
         onForeground?.();
       }
+    }).then(handle => {
+      if (isCancelled) {
+        handle.remove();
+      } else {
+        pluginHandle = handle;
+      }
     });
-    cleanup = () => { handle.then(h => h.remove()); };
   });
-  return () => { cleanup?.(); };
+
+  return () => {
+    isCancelled = true;
+    if (pluginHandle) {
+      pluginHandle.remove();
+    }
+  };
+}
+
+/**
+ * Helper to require inline biometrics before performing sensitive actions.
+ * If biometric is not enabled or not on native, it returns true immediately.
+ */
+export async function requireInlineBiometric(biometricEnabled: boolean): Promise<boolean> {
+  if (!isNative() || !biometricEnabled) {
+    return true;
+  }
+  
+  const result = await checkBiometric({ cancelTitle: 'Cancel' });
+  return result.success === true;
 }
