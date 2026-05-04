@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Search, Plus, Star, Eye, EyeOff, Copy, Check, Trash2,
   Edit3, Globe, User, Key, Tag, Shield, Clock, ExternalLink,
@@ -102,7 +102,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
   const [showCardPin, setShowCardPin] = useState(false);
   // Identity show/hide state
   const [showIdNumber, setShowIdNumber] = useState(false);
-  const { updateEntry, deleteEntry, settings } = useVaultStore();
+  const { updateEntry, deleteEntry, settings, duplicateEntry } = useVaultStore();
 
   /**
    * Gate sensitive field reveals behind biometrics / device PIN.
@@ -131,9 +131,10 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
 
   const handleToggleFavorite = () => updateEntry(entry.id, { isFavorite: !entry.isFavorite });
   const handleDelete = async () => {
-    if (confirm(`Delete "${entry.name}"? This cannot be undone.`)) {
-      deleteEntry(entry.id);
-    }
+    deleteEntry(entry.id); // undo toast appears in Layout for 5s
+  };
+  const handleDuplicate = async () => {
+    await duplicateEntry(entry.id);
   };
   const handleBreachCheck = async () => {
     if (!entry.password) return;
@@ -182,12 +183,19 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
             style={{ color: entry.isFavorite ? 'var(--c-accent)' : 'var(--c-text-f)' }}>
             <Star size={16} fill={entry.isFavorite ? 'var(--c-accent)' : 'none'} />
           </button>
+          <button onClick={handleDuplicate} className="p-2 rounded-lg transition-all"
+            title="Duplicate entry"
+            style={{ color: 'var(--c-text-m)' }} onMouseEnter={e => (e.currentTarget.style.color = 'var(--c-text)')}
+            onMouseLeave={e => (e.currentTarget.style.color = 'var(--c-text-m)')}>
+            <Copy size={16} />
+          </button>
           <button onClick={handleEdit} className="p-2 rounded-lg transition-all"
             style={{ color: 'var(--c-text-m)' }} onMouseEnter={e => (e.currentTarget.style.color = 'var(--c-text)')}
             onMouseLeave={e => (e.currentTarget.style.color = 'var(--c-text-m)')}>
             <Edit3 size={16} />
           </button>
           <button onClick={handleDelete} className="p-2 rounded-lg transition-all"
+            title="Delete (can undo)"
             style={{ color: 'var(--c-text-m)' }} onMouseEnter={e => (e.currentTarget.style.color = '#EF4444')}
             onMouseLeave={e => (e.currentTarget.style.color = 'var(--c-text-m)')}>
             <Trash2 size={16} />
@@ -816,6 +824,105 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
   );
 }
 
+/** Detail panel with swipe-right-to-close gesture on mobile. */
+function DetailPanel({
+  mobileShowDetail, onBack, selectedEntry, entries, setAddOpen,
+}: {
+  mobileShowDetail: boolean;
+  onBack: () => void;
+  selectedEntry: VaultEntry | undefined;
+  entries: VaultEntry[];
+  setAddOpen: (v: boolean) => void;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const touchStartX = useRef(0);
+  const touchStartY = useRef(0);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+    touchStartY.current = e.touches[0].clientY;
+  };
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    const dx = e.changedTouches[0].clientX - touchStartX.current;
+    const dy = Math.abs(e.changedTouches[0].clientY - touchStartY.current);
+    // Only trigger if horizontal swipe > 70px and not mostly vertical
+    if (dx > 70 && dy < 60) {
+      onBack();
+    }
+  };
+
+  return (
+    <div
+      ref={panelRef}
+      onTouchStart={mobileShowDetail ? handleTouchStart : undefined}
+      onTouchEnd={mobileShowDetail ? handleTouchEnd : undefined}
+      className={`flex-1 overflow-hidden flex-col ${mobileShowDetail ? 'flex' : 'hidden md:flex'}`}
+      style={{ background: 'var(--c-active-bg)' }}
+    >
+      {/* Mobile back button */}
+      <button
+        onClick={onBack}
+        className="md:hidden flex items-center gap-2 px-4 py-3 text-sm font-medium border-b"
+        style={{ color: 'var(--c-accent)', borderColor: 'var(--c-border-m)' }}
+        aria-label="Back to vault"
+      >
+        <ArrowLeft size={16} /> Back to vault
+      </button>
+      {selectedEntry ? (
+        <EntryDetail key={selectedEntry.id} entry={selectedEntry} />
+      ) : entries.length === 0 ? (
+        <div className="h-full flex items-center justify-center p-8">
+          <div className="w-full max-w-md glass-card rounded-2xl p-8 animate-fade-in">
+            <div className="text-center mb-6">
+              <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl mb-4"
+                style={{ background: 'var(--c-accent-bg)', border: '1px solid var(--c-accent-bd)' }}>
+                <Shield size={26} color="var(--c-accent)" />
+              </div>
+              <h2 className="text-xl font-bold" style={{ color: 'var(--c-text)' }}>Your vault is empty</h2>
+              <p className="text-sm mt-1" style={{ color: 'var(--c-text-m)' }}>Get started in 3 easy steps</p>
+            </div>
+            <div className="space-y-4 mb-6">
+              {[
+                { step: '1', title: 'Add your first entry', desc: 'Click the + button or press Ctrl+N to add a login, note, or API key.' },
+                { step: '2', title: 'Generate strong passwords', desc: 'Use the Password Generator to create unique, high-entropy passwords for every account.' },
+                { step: '3', title: 'Stay protected', desc: 'LockBox auto-locks after inactivity and checks passwords against known breach databases.' },
+              ].map(item => (
+                <div key={item.step} className="flex items-start gap-4">
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold"
+                    style={{ background: 'var(--c-accent-bgm)', color: 'var(--c-accent)', border: '1px solid var(--c-accent-bd)' }}>
+                    {item.step}
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold" style={{ color: 'var(--c-text)' }}>{item.title}</p>
+                    <p className="text-xs mt-0.5" style={{ color: 'var(--c-text-m)' }}>{item.desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setAddOpen(true)} className="btn-primary w-full">
+              <Plus size={16} /> Add Your First Entry
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="h-full flex flex-col items-center justify-center gap-4" style={{ color: 'var(--c-text-g)' }}>
+          <div className="w-20 h-20 rounded-2xl flex items-center justify-center"
+            style={{ background: 'var(--c-hover)', border: '1px solid var(--c-border-m)' }}>
+            <Key size={36} color="var(--c-border)" />
+          </div>
+          <div className="text-center">
+            <p className="font-semibold" style={{ color: 'var(--c-text-g)' }}>Select an entry</p>
+            <p className="text-sm mt-1" style={{ color: 'var(--c-text-g)' }}>Choose an item from the list or add a new one</p>
+          </div>
+          <button onClick={() => setAddOpen(true)} className="btn-primary text-sm">
+            <Plus size={15} /> Add new entry
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function VaultList() {
   const {
     entries, searchQuery, setSearch, selectedCategory, setCategory,
@@ -824,6 +931,27 @@ export function VaultList() {
   } = useVaultStore();
   const [addOpen, setAddOpen] = useState(false);
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
+
+  // ── Mobile detail swipe-back: push history entry so Android back button works ──
+  const showDetail = (id: string) => {
+    setSelectedEntry(id);
+    setMobileShowDetail(true);
+    history.pushState({ lockboxDetail: true }, '');
+  };
+  const hideDetail = useCallback(() => {
+    setMobileShowDetail(false);
+  }, []);
+
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      if (mobileShowDetail) {
+        hideDetail();
+        e.preventDefault?.();
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [mobileShowDetail, hideDetail]);
 
   // Wire Ctrl+N / external trigger to open the add modal
   useEffect(() => {
@@ -889,8 +1017,8 @@ export function VaultList() {
         className={`vault-list-panel flex-col border-r ${mobileShowDetail ? 'hidden md:flex' : 'flex'} w-full md:w-80 md:flex-shrink-0`}
         style={{ borderColor: 'var(--c-border-m)' }}
       >
-        {/* Search + Add */}
-        <div className="p-4 space-y-3 border-b" style={{ borderColor: 'var(--c-border-m)' }}>
+        {/* Search + Add — sticky so it stays visible while scrolling */}
+        <div className="p-4 space-y-3 border-b sticky top-0 z-10" style={{ borderColor: 'var(--c-border-m)', background: 'var(--c-surface)' }}>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--c-text-f)' }} />
@@ -970,10 +1098,14 @@ export function VaultList() {
             <div className="space-y-1">
               {sorted.map(entry => {
                 const quickCopyText = entry.type === 'wifi' ? (entry.wifiSsid || '') : (entry.username || '');
+                const ageDays = entry.password
+                  ? Math.floor((Date.now() - new Date(entry.updatedAt).getTime()) / 86_400_000)
+                  : 0;
+                const ageWarning = settings.passwordAgeDays > 0 && entry.password && ageDays >= settings.passwordAgeDays;
                 return (
                   <div
                     key={entry.id}
-                    onClick={() => { setSelectedEntry(entry.id); setMobileShowDetail(true); }}
+                    onClick={() => { showDetail(entry.id); }}
                     className={`entry-row group ${selectedEntryId === entry.id ? 'active' : ''}`}
                   >
                     <EntryIcon entry={entry} />
@@ -982,6 +1114,11 @@ export function VaultList() {
                         <p className="text-sm font-medium truncate" style={{ color: 'var(--c-text)' }}>{entry.name}</p>
                         {entry.isFavorite && <Star size={10} color="#F0B429" fill="#F0B429" />}
                         {entry.isCompromised && <AlertTriangle size={10} color="#EF4444" />}
+                        {ageWarning && (
+                          <span title={`Password not changed in ${ageDays} days`}>
+                            <Clock size={10} color="#F97316" />
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs truncate" style={{ color: 'var(--c-text-f)' }}>
                         {entry.type === 'wifi'
@@ -1022,107 +1159,19 @@ export function VaultList() {
       </div>
 
       {/* Right: Detail panel — shown on desktop always, on mobile only when mobileShowDetail */}
-      <div
-        className={`flex-1 overflow-hidden flex-col ${mobileShowDetail ? 'flex' : 'hidden md:flex'}`}
-        style={{ background: 'var(--c-active-bg)' }}
-      >
-        {/* Mobile back button */}
+      <DetailPanel mobileShowDetail={mobileShowDetail} onBack={hideDetail} selectedEntry={selectedEntry} entries={entries} setAddOpen={setAddOpen} />
+
+      {/* FAB — mobile only, hidden when detail is visible */}
+      {!mobileShowDetail && (
         <button
-          onClick={() => setMobileShowDetail(false)}
-          className="md:hidden flex items-center gap-2 px-4 py-3 text-sm font-medium border-b"
-          style={{ color: 'var(--c-accent)', borderColor: 'var(--c-border-m)' }}
+          onClick={() => setAddOpen(true)}
+          className="md:hidden fixed bottom-24 right-5 z-40 w-14 h-14 rounded-full flex items-center justify-center shadow-2xl transition-transform active:scale-95"
+          style={{ background: 'var(--c-accent)', color: '#000' }}
+          aria-label="Add new entry"
         >
-          <ArrowLeft size={16} /> Back to vault
+          <Plus size={24} />
         </button>
-        {selectedEntry ? (
-          <EntryDetail entry={selectedEntry} />
-        ) : entries.length === 0 ? (
-          /* First-run onboarding card */
-          <div className="h-full flex items-center justify-center p-8">
-            <div className="w-full max-w-md glass-card rounded-2xl p-8 animate-fade-in">
-              <div className="text-center mb-6">
-                <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl mb-4"
-                  style={{ background: 'var(--c-accent-bg)', border: '1px solid var(--c-accent-bd)' }}>
-                  <Shield size={26} color="var(--c-accent)" />
-                </div>
-                <h2 className="text-xl font-bold" style={{ color: 'var(--c-text)' }}>Your vault is empty</h2>
-                <p className="text-sm mt-1" style={{ color: 'var(--c-text-m)' }}>Get started in 3 easy steps</p>
-              </div>
-              <div className="space-y-4 mb-6">
-                {[
-                  { step: '1', icon: <Plus size={16} />, title: 'Add your first entry', desc: 'Click the + button or press Ctrl+N to add a login, note, or API key.' },
-                  { step: '2', icon: <Key size={16} />, title: 'Generate strong passwords', desc: 'Use the Password Generator to create unique, high-entropy passwords for every account.' },
-                  { step: '3', icon: <Shield size={16} />, title: 'Stay protected', desc: 'LockBox auto-locks after inactivity and checks passwords against known breach databases.' },
-                ].map(item => (
-                  <div key={item.step} className="flex items-start gap-4">
-                    <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold"
-                      style={{ background: 'var(--c-accent-bgm)', color: 'var(--c-accent)', border: '1px solid var(--c-accent-bd)' }}>
-                      {item.step}
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold" style={{ color: 'var(--c-text)' }}>{item.title}</p>
-                      <p className="text-xs mt-0.5" style={{ color: 'var(--c-text-m)' }}>{item.desc}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <button onClick={() => setAddOpen(true)} className="btn-primary w-full">
-                <Plus size={16} /> Add Your First Entry
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="h-full flex flex-col items-center justify-center gap-4"
-            style={{ color: 'var(--c-text-g)' }}>
-            {entries.length === 0 ? (
-              // First run onboarding card
-              <div className="max-w-sm rounded-2xl p-8 glass-card animate-slide-up">
-                <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5"
-                  style={{ background: 'rgba(240,180,41,0.1)', border: '1px solid rgba(240,180,41,0.2)' }}>
-                  <Shield size={32} color="#F0B429" />
-                </div>
-                  <h3 className="text-xl font-bold text-center mb-2" style={{ color: 'var(--c-text)' }}>Your vault is empty</h3>
-                <p className="text-sm text-center mb-6" style={{ color: 'var(--c-text-s)' }}>
-                  Let's secure your first credential.
-                </p>
-                <div className="space-y-3 mb-8">
-                  {[
-                    'Click "Add new entry" below',
-                    'Generate a strong random password',
-                    'Save your login safely'
-                  ].map((step, i) => (
-                    <div key={i} className="flex items-center gap-3 text-sm" style={{ color: 'var(--c-text-s)' }}>
-                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
-                        style={{ background: 'var(--c-hover)', color: 'var(--c-text-s)' }}>{i + 1}</div>
-                      {step}
-                    </div>
-                  ))}
-                </div>
-                <button onClick={() => setAddOpen(true)} className="btn-primary w-full py-3">
-                  <Plus size={16} /> Add First Entry
-                </button>
-              </div>
-            ) : (
-              // Normal empty state
-              <>
-                <div className="w-20 h-20 rounded-2xl flex items-center justify-center"
-                  style={{ background: 'var(--c-hover)', border: '1px solid var(--c-border-m)' }}>
-                  <Key size={36} color="var(--c-border)" />
-                </div>
-                <div className="text-center">
-                  <p className="font-semibold" style={{ color: 'var(--c-text-g)' }}>Select an entry</p>
-                  <p className="text-sm mt-1" style={{ color: 'var(--c-text-g)' }}>
-                    Choose an item from the list or add a new one
-                  </p>
-                </div>
-                <button onClick={() => setAddOpen(true)} className="btn-primary text-sm">
-                  <Plus size={15} /> Add new entry
-                </button>
-              </>
-            )}
-          </div>
-        )}
-      </div>
+      )}
 
       {addOpen && <EntryModal mode="add" onClose={() => setAddOpen(false)} />}
     </div>

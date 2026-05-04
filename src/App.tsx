@@ -4,7 +4,7 @@ import { UnlockScreen } from './components/UnlockScreen';
 import { SetupScreen } from './components/SetupScreen';
 import { Layout } from './components/Layout';
 import { BiometricGate } from './components/BiometricGate';
-import { isNative, setupPrivacyScreen, setupAppStateListener } from './utils/capacitor';
+import { isNative, isElectron, isNativeOrElectron, setupPrivacyScreen, setupAppStateListener } from './utils/capacitor';
 import { restoreVaultFromBackup } from './utils/storage';
 
 export default function App() {
@@ -86,10 +86,31 @@ export default function App() {
     // so the closure always reflects the latest values.
   }, [lock, softLock, isUnlocked, settings.biometricEnabled]);
 
+  // Set up Electron window blur/focus for soft-lock on desktop
+  useEffect(() => {
+    if (!isElectron()) return;
+    const api = (window as any).electronAPI;
+
+    const handleBlur = (_event: any) => {
+      if (settings.biometricEnabled && isUnlocked) {
+        softLock();
+      } else if (isUnlocked) {
+        lock();
+      }
+    };
+
+    api.onWindowBlur(handleBlur);
+
+    return () => {
+      api.removeAllListeners('window:blur');
+      api.removeAllListeners('window:focus');
+    };
+  }, [lock, softLock, isUnlocked, settings.biometricEnabled]);
+
   // When the vault HARD-locks, reset the cold-start biometric flag so the
   // biometric step is required again on the next unlock attempt.
   useEffect(() => {
-    if (!isNative()) return;
+    if (!isNativeOrElectron()) return;
     if (!isUnlocked && !isSoftLocked) {
       setBiometricCleared(false);
     }
@@ -115,7 +136,7 @@ export default function App() {
 
   // ── HARD-LOCK / COLD START with biometrics enabled ──────────────────────────
   // The user must pass biometrics FIRST, then enter the master password.
-  if (!isUnlocked && isNative() && settings.biometricEnabled && !biometricCleared) {
+  if (!isUnlocked && isNativeOrElectron() && settings.biometricEnabled && !biometricCleared) {
     return (
       <BiometricGate
         onSuccess={() => setBiometricCleared(true)}
@@ -131,7 +152,7 @@ export default function App() {
   if (!isUnlocked) {
     return (
       <UnlockScreen
-        biometricVerified={isNative() && settings.biometricEnabled && biometricCleared}
+        biometricVerified={isNativeOrElectron() && settings.biometricEnabled && biometricCleared}
       />
     );
   }

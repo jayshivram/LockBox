@@ -7,7 +7,7 @@ import {
 import { useVaultStore } from '../store/vaultStore';
 import { deleteVault, encryptExport, decryptImport } from '../utils/crypto';
 import { checkStrength } from '../utils/strength';
-import { isNative, checkBiometric, isBiometricAvailable } from '../utils/capacitor';
+import { isNative, isElectron, isNativeOrElectron, checkBiometric, isBiometricAvailable } from '../utils/capacitor';
 
 export function Settings() {
   const {
@@ -450,12 +450,14 @@ export function Settings() {
           </div>
         </div>
 
-        {/* Mobile Security — native only */}
-        {isNative() && (
+        {/* Mobile / Desktop Security — native or Electron only */}
+        {isNativeOrElectron() && (
           <div className="glass-card rounded-2xl p-6 space-y-5">
             <div className="flex items-center gap-2 mb-1">
               <ShieldAlert size={16} color="var(--c-accent)" />
-              <h2 className="font-semibold" style={{ color: 'var(--c-text)' }}>Mobile Security</h2>
+              <h2 className="font-semibold" style={{ color: 'var(--c-text)' }}>
+                {isElectron() ? 'Desktop Security' : 'Mobile Security'}
+              </h2>
             </div>
 
             {/* Biometric unlock */}
@@ -465,7 +467,9 @@ export function Settings() {
                 <div>
                   <p className="text-sm font-medium" style={{ color: 'var(--c-text)' }}>Biometric Unlock</p>
                   <p className="text-xs mt-0.5" style={{ color: 'var(--c-text-m)' }}>
-                    Use fingerprint or face recognition to access the vault
+                    {isElectron()
+                      ? 'Use Windows Hello, fingerprint, or Touch ID to access the vault'
+                      : 'Use fingerprint or face recognition to access the vault'}
                   </p>
                   {biometricMsg && (
                     <p className="text-xs mt-1" style={{ color: '#22C55E' }}>{biometricMsg}</p>

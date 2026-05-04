@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Fingerprint, Lock, AlertCircle, KeyRound, ShieldX } from 'lucide-react';
-import { checkBiometric, isBiometricAvailable } from '../utils/capacitor';
+import { checkBiometric, isBiometricAvailable, isNative } from '../utils/capacitor';
+import { App } from '@capacitor/app';
 
 type GateStatus = 'checking' | 'waiting' | 'failed' | 'lockout' | 'unavailable';
 
@@ -17,6 +18,10 @@ interface Props {
    * This triggers a hard lock so the master password screen is shown.
    */
   onFallback: () => void;
+  /**
+   * Whether this is a background resume (soft lock) rather than a cold start.
+   */
+  isSoftLock?: boolean;
 }
 
 /**
@@ -27,7 +32,7 @@ interface Props {
  * - Uses typed error results from checkBiometric() to give the user
  *   meaningful feedback instead of a generic "failed" message.
  */
-export function BiometricGate({ onSuccess, onFallback }: Props) {
+export function BiometricGate({ onSuccess, onFallback, isSoftLock }: Props) {
   const [status, setStatus] = useState<GateStatus>('checking');
   const [message, setMessage] = useState('Checking sensor…');
 
@@ -35,7 +40,9 @@ export function BiometricGate({ onSuccess, onFallback }: Props) {
     setStatus('waiting');
     setMessage('Touch the sensor or use your device PIN');
 
-    const result = await checkBiometric();
+    const result = await checkBiometric({
+      cancelTitle: isSoftLock ? 'Cancel' : 'Use Master Password',
+    });
 
     if (result.success) {
       onSuccess();
@@ -44,16 +51,20 @@ export function BiometricGate({ onSuccess, onFallback }: Props) {
 
     switch (result.reason) {
       case 'cancelled':
-        // User deliberately cancelled — fall back to master password
-        onFallback();
+        if (!isSoftLock) {
+          onFallback();
+        } else {
+          setStatus('failed');
+          setMessage('Authentication cancelled. Tap to try again.');
+        }
         break;
       case 'lockout':
         setStatus('lockout');
-        setMessage('Biometric locked out — too many failed attempts. Use your master password.');
+        setMessage(isSoftLock ? 'Biometric locked out. Tap to try again.' : 'Biometric locked out. Use your master password.');
         break;
       case 'unavailable':
         setStatus('unavailable');
-        setMessage('Biometric sensor not available on this device. Use your master password.');
+        setMessage(isSoftLock ? 'Biometric sensor unavailable.' : 'Biometric sensor not available. Use your master password.');
         break;
       default:
         setStatus('failed');
@@ -75,7 +86,24 @@ export function BiometricGate({ onSuccess, onFallback }: Props) {
         return;
       }
 
-      // Sensor is ready — fire the prompt immediately (no arbitrary setTimeout).
+      // DO NOT fire the prompt if the app is currently in the background!
+      // Doing so will cause Android to aggressively yank the app back to the foreground.
+      if (isNative()) {
+        const state = await App.getState();
+        if (!state.isActive) {
+          setStatus('waiting');
+          // Wait for the app to come back to the foreground before triggering.
+          const handle = await App.addListener('appStateChange', (s) => {
+            if (s.isActive && !cancelled) {
+              triggerBiometric();
+              handle.remove();
+            }
+          });
+          return;
+        }
+      }
+
+      // Sensor is ready and app is active — fire the prompt immediately.
       triggerBiometric();
     };
 
@@ -153,19 +181,21 @@ export function BiometricGate({ onSuccess, onFallback }: Props) {
           </p>
         )}
 
-        {/* Fallback to master password */}
-        <button
-          onClick={onFallback}
-          className="mt-10 flex items-center gap-2 text-sm font-medium px-5 py-3 rounded-xl transition-all"
-          style={{
-            background: 'var(--c-hover)',
-            color: 'var(--c-text-m)',
-            border: '1px solid var(--c-border)',
-          }}
-        >
-          <KeyRound size={14} />
-          Use master password instead
-        </button>
+        {/* Fallback to master password (hidden entirely during soft-lock) */}
+        {!isSoftLock && (
+          <button
+            onClick={onFallback}
+            className="mt-10 flex items-center gap-2 text-sm font-medium px-5 py-3 rounded-xl transition-all"
+            style={{
+              background: 'var(--c-hover)',
+              color: 'var(--c-text-m)',
+              border: '1px solid var(--c-border)',
+            }}
+          >
+            <KeyRound size={14} />
+            Use master password instead
+          </button>
+        )}
 
       </div>
     </div>

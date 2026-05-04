@@ -1,0 +1,186 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Android APK ────────────────────────────────────────────────────────────
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web assets
+        run: npm run build
+
+      - name: Sync Capacitor to Android
+        run: npx cap sync android
+
+      - name: Build release APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Rename APK to versioned filename
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp android/app/build/outputs/apk/release/app-release.apk "LockBox-${VERSION}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: LockBox-*.apk
+
+  # ── Electron Windows ───────────────────────────────────────────────────────
+  electron-windows:
+    name: Windows Installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web assets
+        run: npm run build
+
+      - name: Package — Windows NSIS installer
+        run: npx electron-builder --win --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist-electron/*.exe
+
+  # ── Electron macOS ─────────────────────────────────────────────────────────
+  electron-macos:
+    name: macOS DMG
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web assets
+        run: npm run build
+
+      - name: Package — macOS DMG (unsigned)
+        run: npx electron-builder --mac --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist-electron/*.dmg
+
+  # ── Electron Linux ─────────────────────────────────────────────────────────
+  electron-linux:
+    name: Linux AppImage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web assets
+        run: npm run build
+
+      - name: Package — Linux AppImage
+        run: npx electron-builder --linux --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: dist-electron/*.AppImage
+
+  # ── GitHub Release ─────────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [android, electron-windows, electron-macos, electron-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: 'LockBox ${{ github.ref_name }}'
+          draft: false
+          prerelease: false
+          files: |
+            *.apk
+            *.exe
+            *.dmg
+            *.AppImage
+          body: |
+            ## LockBox ${{ github.ref_name }} — Desktop Biometrics & Quality of Life
+
+            ### 🔐 Security Enhancements
+            - **Desktop biometric authentication** — Windows Hello (fingerprint, face, PIN) and macOS Touch ID now gate app unlock on the Electron desktop app
+            - **Desktop soft-lock** — Desktop app soft-locks when the window loses focus and prompts biometric re-verification on return
+            - **Biometric vault tab gate** — The Vault tab requires biometric verification on both mobile and desktop (when enabled in Settings)
+
+            ### 🐛 Bug Fixes
+            - **Per-entry eye reveal** — Eye icon now only reveals the password for the selected entry; was incorrectly revealing all entries at once
+            - **Mobile swipe-back** — Swipe-right gesture now correctly navigates back from entry detail on Android/iOS
+
+            ### ✨ Quality of Life
+            - **Undo last delete** — Accidentally deleted an entry? A 5-second undo snackbar lets you recover it instantly
+            - **Entry duplication** — Clone any entry with one tap to use as a starting point
+            - **Password age badges** — Visual warning icon on entries whose passwords haven't been rotated in 90+ days (configurable)
+            - **Keyboard shortcuts** — Press `?` anywhere in the app to view all keyboard shortcuts (Ctrl+F, Ctrl+N, Ctrl+L, Escape)
+            - **Floating action button** — Quick-add button on mobile vault view
+            - **Sticky search bar** — Search stays visible while scrolling through entries
+            - **Haptic feedback** — Light haptic pulse on clipboard copy (mobile only)
+
+            ---
+
+            ### 📦 Platform Notes
+
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | Android | `LockBox-*.apk` | Signed release APK — install directly |
+            | Windows | `LockBox Setup *.exe` | NSIS installer — SmartScreen may warn (unsigned); click **More info → Run anyway** |
+            | macOS | `LockBox-*.dmg` | Unsigned build — on first launch right-click → **Open** to bypass Gatekeeper |
+            | Linux | `LockBox-*.AppImage` | `chmod +x LockBox-*.AppImage && ./LockBox-*.AppImage` |

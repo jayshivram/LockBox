@@ -60,6 +60,8 @@ export interface VaultSettings {
   requireMasterPasswordOnResume: boolean;
   biometricEnabled: boolean;
   wipeAfterAttempts: number; // 0 = disabled
+  requireBiometricForVaultTab: boolean; // gate vault tab with biometric on native
+  passwordAgeDays: number; // warn when password older than N days (0 = off)
 }
 
 /**

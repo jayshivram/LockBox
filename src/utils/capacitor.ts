@@ -11,6 +11,16 @@ export function isNative(): boolean {
   return Capacitor.isNativePlatform();
 }
 
+/** Returns true when running inside the Electron desktop wrapper. */
+export function isElectron(): boolean {
+  return typeof window !== 'undefined' && 'electronAPI' in window;
+}
+
+/** Returns true when running in any managed runtime (native mobile OR desktop). */
+export function isNativeOrElectron(): boolean {
+  return isNative() || isElectron();
+}
+
 /**
  * Enable the privacy/content shield:
  *  - Blocks the app from appearing in the Android recent-apps switcher screenshot
@@ -43,6 +53,13 @@ export type BiometricResult =
  *   of treating every failure identically.
  */
 export async function checkBiometric(options?: { cancelTitle?: string }): Promise<BiometricResult> {
+  // Desktop: delegate to Electron main process (Windows Hello / Touch ID)
+  if (isElectron()) {
+    const api = (window as any).electronAPI;
+    const result = await api.checkBiometric('Verify your identity to access LockBox') as BiometricResult;
+    return result;
+  }
+
   if (!isNative()) return { success: false, reason: 'unavailable' };
   try {
     const { BiometricAuth, BiometryErrorType } = await import('@aparajita/capacitor-biometric-auth');
@@ -92,6 +109,10 @@ export async function checkBiometric(options?: { cancelTitle?: string }): Promis
  * Returns true if the device has biometric hardware enrolled and ready.
  */
 export async function isBiometricAvailable(): Promise<boolean> {
+  if (isElectron()) {
+    const api = (window as any).electronAPI;
+    return api.isBiometricAvailable() as Promise<boolean>;
+  }
   if (!isNative()) return false;
   try {
     const { BiometricAuth } = await import('@aparajita/capacitor-biometric-auth');
@@ -99,6 +120,19 @@ export async function isBiometricAvailable(): Promise<boolean> {
     return result.isAvailable;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Trigger a light haptic impact on native platforms (no-op on web/desktop).
+ */
+export async function triggerHaptic(): Promise<void> {
+  if (!isNative()) return;
+  try {
+    const { Haptics, ImpactStyle } = await import('@capacitor/haptics');
+    await Haptics.impact({ style: ImpactStyle.Light });
+  } catch {
+    // Plugin not available — fail silently
   }
 }
 
@@ -149,7 +183,7 @@ export function setupAppStateListener(
  * If biometric is not enabled or not on native, it returns true immediately.
  */
 export async function requireInlineBiometric(biometricEnabled: boolean): Promise<boolean> {
-  if (!isNative() || !biometricEnabled) {
+  if ((!isNative() && !isElectron()) || !biometricEnabled) {
     return true;
   }
   

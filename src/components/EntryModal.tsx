@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Plus, Zap, Eye, EyeOff, Wifi, CreditCard, Fingerprint } from 'lucide-react';
 import { useVaultStore } from '../store/vaultStore';
 import { checkStrength } from '../utils/strength';
@@ -142,17 +143,15 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
     identity: 'Identity',
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4"
-      style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
-      <div className="w-full md:max-w-lg glass-card rounded-t-2xl md:rounded-2xl animate-slide-up"
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          // Cap height — do NOT force height so the footer naturally stays pinned
-          maxHeight: '92dvh',
-          overflow: 'hidden',
-        }}>
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[200] flex items-end md:items-center justify-center"
+      style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)' }}
+    >
+      <div
+        className="w-full md:max-w-lg glass-card rounded-t-2xl md:rounded-2xl animate-slide-up"
+        style={{ maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+      >
 
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-5 border-b"
@@ -167,11 +166,12 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
           </button>
         </div>
 
-        {/* Scrollable body — min-h-0 is CRITICAL on mobile flex layouts;
-             without it, the flex child can't shrink below its content size
-             and the footer gets pushed off screen. */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4"
-          style={{ overscrollBehavior: 'contain', minHeight: 0 }}>
+        {/* All form content is scrollable — buttons live at the bottom of this scroll area
+             so they are ALWAYS reachable regardless of keyboard, safe areas, or z-index */}
+        <div
+          className="overflow-y-auto px-6 pt-5 pb-8 space-y-4"
+          style={{ overscrollBehavior: 'contain', flex: '1 1 auto', minHeight: 0 }}
+        >
           {/* Type selector */}
           <div>
             <label className="label-text">Entry Type</label>
@@ -666,27 +666,29 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
             <input value={tags} onChange={e => setTags(e.target.value)}
               className="input-field mt-1.5 text-sm" placeholder="finance, important, work (comma separated)" />
           </div>
-        </div>
 
-        {/* Footer — flex-shrink-0 ensures it's always visible at bottom */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t"
-          style={{
-            flexShrink: 0,
-            borderColor: 'var(--c-border)',
-            background: 'var(--c-card)',
-            // Account for Android navigation bar / home indicator
-            paddingBottom: 'max(1rem, env(safe-area-inset-bottom))',
-          }}>
-          <button onClick={onClose} className="btn-ghost">Cancel</button>
-          <button onClick={handleSave} disabled={!name.trim() || saving} className="btn-primary"
-            style={{ minHeight: 44 }}>
-            <Plus size={15} />
-            {saving ? 'Saving...' : mode === 'add' ? 'Add Entry' : 'Save Changes'}
-          </button>
+          {/* ── Action buttons — always reachable by scrolling to bottom ── */}
+          <div
+            className="flex items-center justify-end gap-3 pt-4 mt-2 border-t"
+            style={{ borderColor: 'var(--c-border)' }}
+          >
+            <button onClick={onClose} className="btn-ghost">Cancel</button>
+            <button
+              onClick={handleSave}
+              disabled={!name.trim() || saving}
+              className="btn-primary"
+              style={{ minHeight: 48, paddingLeft: 24, paddingRight: 24, fontSize: 15 }}
+            >
+              <Plus size={16} />
+              {saving ? 'Saving...' : mode === 'add' ? 'Add Entry' : 'Save Changes'}
+            </button>
+          </div>
+
+          {/* Bottom spacer so buttons never hide behind Android nav bar */}
+          <div style={{ height: 'max(24px, env(safe-area-inset-bottom))' }} />
         </div>
       </div>
-
-      <style>{``}</style>
-    </div>
+    </div>,
+    document.body
   );
 }

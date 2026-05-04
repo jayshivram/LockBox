@@ -1,5 +1,6 @@
 import type { EncryptedVault, VaultData } from '../types';
 import { backupToPreferences, removeFromPreferences } from './storage';
+import { triggerHaptic } from './capacitor';
 
 const ITERATIONS = 310_000;
 const VAULT_KEY   = 'lockbox_vault';
@@ -246,6 +247,7 @@ export async function decryptImport(encryptedJson: string, passphrase: string): 
 let clipboardTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function copyToClipboard(text: string, clearAfterMs = 15_000): void {
+  triggerHaptic(); // light haptic on native
   navigator.clipboard.writeText(text).catch(() => {
     // Fallback for environments without clipboard API
     const el = document.createElement('textarea');

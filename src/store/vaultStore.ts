@@ -21,7 +21,12 @@ const DEFAULT_SETTINGS: VaultSettings = {
   requireMasterPasswordOnResume: true,
   biometricEnabled: localStorage.getItem('lockbox_biometric') !== 'false', // Defaults to true if null
   wipeAfterAttempts: 0,
+  requireBiometricForVaultTab: true,
+  passwordAgeDays: 90,
 };
+
+// Undo-delete timer held outside Zustand to avoid serialisation issues
+let _undoTimer: ReturnType<typeof setTimeout> | null = null;
 
 const MAX_IMPORT_BYTES = 5 * 1024 * 1024; // 5 MB guard
 
@@ -114,6 +119,18 @@ export interface VaultStore {
   openAddEntryModal: boolean;
   triggerAddEntry: () => void;
   clearAddEntryModal: () => void;
+
+  // Vault tab biometric gate
+  vaultTabUnlocked: boolean;
+  setVaultTabUnlocked: (v: boolean) => void;
+
+  // Undo-delete
+  deletedEntry: VaultEntry | null;
+  undoDeleteEntry: () => Promise<void>;
+  clearDeletedEntry: () => void;
+
+  // Entry duplication
+  duplicateEntry: (id: string) => Promise<void>;
 }
 
 const _initLockout = loadLockoutState();
@@ -144,6 +161,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   lockFiresAt: 0,
   lastActivityReset: 0,
   openAddEntryModal: false,
+  vaultTabUnlocked: false,
+  deletedEntry: null,
 
   // ── Setup (always creates a v2 vault) ────────────────────────────────────
   setup: async (password, hint) => {
@@ -376,6 +395,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     _sessionPw = '';
     const { lockTimer } = get();
     if (lockTimer) clearTimeout(lockTimer);
+    if (_undoTimer) { clearTimeout(_undoTimer); _undoTimer = null; }
     set({
       isUnlocked: false,
       isSoftLocked: false,
@@ -391,6 +411,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
       activeFilterType: 'all',
       isSetup: vaultExists(),
       unlockedViaRecovery: false,
+      vaultTabUnlocked: false,
+      deletedEntry: null,
     });
   },
 
@@ -400,7 +422,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     // double-lock scenario during the biometric prompt flow.
     const { lockTimer } = get();
     if (lockTimer) clearTimeout(lockTimer);
-    set({ isSoftLocked: true, lockTimer: null });
+    set({ isSoftLocked: true, lockTimer: null, vaultTabUnlocked: false });
   },
 
   // ── Soft Unlock (biometric passed — resume session) ───────────────────────
@@ -455,8 +477,15 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   },
 
   deleteEntry: async (id) => {
-    set(s => ({ entries: s.entries.filter(e => e.id !== id), selectedEntryId: null }));
+    const entry = get().entries.find(e => e.id === id);
+    set(s => ({ entries: s.entries.filter(e => e.id !== id), selectedEntryId: null, deletedEntry: entry ?? null }));
     await get().saveVault();
+    // Auto-clear the undo buffer after 5 seconds
+    if (_undoTimer) clearTimeout(_undoTimer);
+    _undoTimer = setTimeout(() => {
+      useVaultStore.setState({ deletedEntry: null });
+      _undoTimer = null;
+    }, 5000);
   },
 
   // ── UI setters ────────────────────────────────────────────────────────────
@@ -616,5 +645,39 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
 
   triggerAddEntry: () => set({ currentView: 'vault', openAddEntryModal: true }),
   clearAddEntryModal: () => set({ openAddEntryModal: false }),
-}));
 
+  // ── Vault tab biometric gate ──────────────────────────────────────────────
+  setVaultTabUnlocked: (v) => set({ vaultTabUnlocked: v }),
+
+  // ── Undo delete ───────────────────────────────────────────────────────────
+  undoDeleteEntry: async () => {
+    const { deletedEntry } = get();
+    if (!deletedEntry) return;
+    if (_undoTimer) { clearTimeout(_undoTimer); _undoTimer = null; }
+    set(s => ({ entries: [...s.entries, deletedEntry], deletedEntry: null }));
+    await get().saveVault();
+  },
+  clearDeletedEntry: () => {
+    if (_undoTimer) { clearTimeout(_undoTimer); _undoTimer = null; }
+    set({ deletedEntry: null });
+  },
+
+  // ── Duplicate entry ───────────────────────────────────────────────────────
+  duplicateEntry: async (id) => {
+    const source = get().entries.find(e => e.id === id);
+    if (!source) return;
+    const now = new Date().toISOString();
+    const duplicate: VaultEntry = {
+      ...source,
+      id: generateId(),
+      name: `Copy of ${source.name}`,
+      createdAt: now,
+      updatedAt: now,
+      isFavorite: false,
+      isCompromised: false,
+      passwordHistory: [],
+    };
+    set(s => ({ entries: [...s.entries, duplicate], selectedEntryId: duplicate.id }));
+    await get().saveVault();
+  },
+}));
