@@ -1,7 +1,7 @@
 {
   "name": "lockbox",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "description": "LockBox - Offline Local Password Manager",
   "main": "electron/main.cjs",
@@ -27,7 +27,10 @@
     "@capacitor/privacy-screen": "^2.0.1",
     "@capacitor/share": "^8.0.1",
     "@capacitor/splash-screen": "^8.0.1",
+    "@zxing/browser": "^0.2.0",
+    "@zxing/library": "^0.23.0",
     "dexie": "^3.2.4",
+    "jsqr": "^1.4.0",
     "lucide-react": "^0.383.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -61,7 +64,11 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "target": [{"target": "dmg"}]
+      "target": [
+        {
+          "target": "dmg"
+        }
+      ]
     },
     "win": {
       "target": "nsis",
@@ -71,7 +78,12 @@
     "linux": {
       "category": "Utility",
       "target": [
-        {"target": "tar.gz", "arch": ["x64"]}
+        {
+          "target": "tar.gz",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     }
   }

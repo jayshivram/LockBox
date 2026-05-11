@@ -1,10 +1,11 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Plus, Zap, Eye, EyeOff, Wifi, CreditCard, Fingerprint, Clipboard, Paperclip, Trash2, Download, KeySquare, LayoutTemplate } from 'lucide-react';
+import { X, Plus, Zap, Eye, EyeOff, Wifi, CreditCard, Fingerprint, Clipboard, Paperclip, Trash2, Download, KeySquare, LayoutTemplate, QrCode, Camera, XCircle } from 'lucide-react';
 import { useVaultStore } from '../store/vaultStore';
 import { checkStrength } from '../utils/strength';
 import { generatePassword, generateId } from '../utils/generator';
 import { saveAttachment, loadAttachment, deleteAttachment, MAX_ATTACHMENT_BYTES } from '../utils/attachmentDb';
+import { parseTOTPUri } from '../utils/totp';
 import type { VaultEntry, Category, EntryType, CustomField, VaultAttachment } from '../types';
 
 const CATEGORIES: Category[] = ['Personal', 'Work', 'Finance', 'Crypto', 'Social', 'Servers', 'API Keys', 'Network'];
@@ -53,6 +54,11 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
   const [apiKey, setApiKey] = useState(entry?.apiKey || '');
   const [apiKeyName, setApiKeyName] = useState(entry?.apiKeyName || '');
   const [totpSecret, setTotpSecret] = useState(entry?.totpSecret || '');
+  const [totpDigits, setTotpDigits] = useState<6 | 8>(entry?.totpDigits === 8 ? 8 : 6);
+  const [totpPeriod, setTotpPeriod] = useState<30 | 60>(entry?.totpPeriod === 60 ? 60 : 30);
+  const [totpShowAdvanced, setTotpShowAdvanced] = useState(
+    entry?.totpDigits === 8 || entry?.totpPeriod === 60
+  );
   // WiFi-specific fields
   const [wifiSsid, setWifiSsid] = useState(entry?.wifiSsid || entry?.name || '');
   const [adminPassword, setAdminPassword] = useState(entry?.adminPassword || '');
@@ -103,6 +109,11 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
   const [attachmentError, setAttachmentError] = useState('');
   const [uploadingFile, setUploadingFile] = useState(false);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const qrFileRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const scanControlsRef = useRef<{ stop: () => void } | null>(null);
+  const [showCameraScanner, setShowCameraScanner] = useState(false);
+  const [cameraError, setCameraError] = useState('');
   const [saving, setSaving] = useState(false);
 
   const strength = password ? checkStrength(password) : null;
@@ -110,6 +121,86 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
 
   // Pending attachment IDs to delete from IndexedDB if entry is saved without them
   const removedAttachmentIds = useRef<string[]>([]);
+
+  // Start/stop live camera QR scanner
+  useEffect(() => {
+    if (!showCameraScanner) return;
+    let cancelled = false;
+    import('@zxing/browser').then(({ BrowserQRCodeReader }) => {
+      if (cancelled || !videoRef.current) return;
+      const reader = new BrowserQRCodeReader();
+      reader
+        .decodeFromConstraints(
+          { video: { facingMode: { ideal: 'environment' } } },
+          videoRef.current,
+          (result, _err, controls) => {
+            if (cancelled || !result) return;
+            cancelled = true;
+            controls.stop();
+            scanControlsRef.current = null;
+            const parsed = parseTOTPUri(result.getText());
+            if (parsed) {
+              setTotpSecret(parsed.secret);
+              setName(prev => prev || parsed.name);
+              if (parsed.digits === 8) { setTotpDigits(8); setTotpShowAdvanced(true); }
+              if (parsed.period === 60) { setTotpPeriod(60); setTotpShowAdvanced(true); }
+            } else {
+              setCameraError('QR code found but it is not a valid TOTP URI.');
+            }
+            setShowCameraScanner(false);
+          }
+        )
+        .then(controls => {
+          if (cancelled) { controls.stop(); return; }
+          scanControlsRef.current = controls;
+        })
+        .catch(e => {
+          if (cancelled) return;
+          setCameraError('Camera unavailable: ' + (e?.message ?? String(e)));
+        });
+    });
+    return () => {
+      cancelled = true;
+      scanControlsRef.current?.stop();
+      scanControlsRef.current = null;
+    };
+  }, [showCameraScanner]);
+
+  const stopCamera = () => {
+    scanControlsRef.current?.stop();
+    scanControlsRef.current = null;
+    setShowCameraScanner(false);
+    setCameraError('');
+  };
+
+  const handleQrImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      URL.revokeObjectURL(objectUrl);
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      import('jsqr').then(({ default: jsQR }) => {
+        const result = jsQR(imageData.data, imageData.width, imageData.height);
+        if (!result) return;
+        const parsed = parseTOTPUri(result.data);
+        if (!parsed) return;
+        setTotpSecret(parsed.secret);
+        if (parsed.name && !name) setName(parsed.name);
+        if (parsed.digits === 8) { setTotpDigits(8); setTotpShowAdvanced(true); }
+        if (parsed.period === 60) { setTotpPeriod(60); setTotpShowAdvanced(true); }
+      });
+    };
+    img.src = objectUrl;
+  };
 
   const handleGenerate = (setter: (val: string) => void) => {
     const pwd = generatePassword({
@@ -215,6 +306,8 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
       apiKey,
       apiKeyName,
       totpSecret,
+      totpDigits: type === 'totp' ? totpDigits : undefined,
+      totpPeriod: type === 'totp' ? totpPeriod : undefined,
       wifiSsid: type === 'wifi' ? wifiSsid.trim() : undefined,
       adminPassword: type === 'wifi' ? adminPassword : undefined,
       // Bank fields
@@ -278,7 +371,7 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
     custom: 'Custom',
   };
 
-  return createPortal(
+  const modal = createPortal(
     <div
       className="fixed inset-0 z-[200] flex items-end md:items-center justify-center"
       style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)' }}
@@ -798,13 +891,54 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
             <div>
               <div className="flex items-center justify-between">
                 <label className="label-text">TOTP Secret Key</label>
-                <PasteButton onPaste={v => setTotpSecret(v.trim().toUpperCase())} />
+                <div className="flex items-center gap-1">
+                  <button type="button" onClick={() => { setCameraError(''); setShowCameraScanner(true); }}
+                    className="flex-shrink-0 p-1.5 rounded transition-all"
+                    style={{ color: 'var(--c-text-f)' }}
+                    title="Scan QR with camera">
+                    <Camera size={13} />
+                  </button>
+                  <button type="button" onClick={() => qrFileRef.current?.click()}
+                    className="flex-shrink-0 p-1.5 rounded transition-all"
+                    style={{ color: 'var(--c-text-f)' }}
+                    title="Import from QR image">
+                    <QrCode size={13} />
+                  </button>
+                  <input ref={qrFileRef} type="file" accept="image/*" className="hidden" onChange={handleQrImport} />
+                  <PasteButton onPaste={v => setTotpSecret(v.trim().toUpperCase())} />
+                </div>
               </div>
               <input value={totpSecret} onChange={e => setTotpSecret(e.target.value.trim().toUpperCase())}
                 className="input-field mt-1.5 font-mono text-sm" placeholder="Base32 secret (e.g. JBSWY3DPEHPK3PXP)" />
               <p className="text-xs mt-1" style={{ color: 'var(--c-text-f)' }}>
-                Scan the QR code or enter the secret key from your account's 2FA settings.
+                Paste the secret key, scan a QR code with your camera, or import from a saved QR image.
               </p>
+              <button type="button" onClick={() => setTotpShowAdvanced(v => !v)}
+                className="text-xs mt-2 flex items-center gap-1"
+                style={{ color: 'var(--c-text-f)' }}>
+                <span style={{ fontSize: '9px' }}>{totpShowAdvanced ? '▲' : '▼'}</span>
+                Advanced options
+              </button>
+              {totpShowAdvanced && (
+                <div className="mt-2 grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label-text">Code Length</label>
+                    <select value={totpDigits} onChange={e => setTotpDigits(Number(e.target.value) as 6 | 8)}
+                      className="input-field mt-1.5 text-sm">
+                      <option value={6}>6 digits (standard)</option>
+                      <option value={8}>8 digits</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label-text">Time Period</label>
+                    <select value={totpPeriod} onChange={e => setTotpPeriod(Number(e.target.value) as 30 | 60)}
+                      className="input-field mt-1.5 text-sm">
+                      <option value={30}>30 seconds (standard)</option>
+                      <option value={60}>60 seconds</option>
+                    </select>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1034,5 +1168,69 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
       </div>
     </div>,
     document.body
+  );
+
+  // Camera scanner overlay — separate portal on top of everything
+  const cameraOverlay = showCameraScanner ? createPortal(
+    <div
+      className="fixed inset-0 flex flex-col items-center justify-center"
+      style={{ zIndex: 300, background: 'rgba(0,0,0,0.92)' }}
+    >
+      <div className="relative w-full max-w-sm px-4">
+        {/* Viewfinder */}
+        <div className="relative rounded-2xl overflow-hidden" style={{ border: '2px solid var(--c-accent)' }}>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full block"
+            style={{ maxHeight: '60vh', objectFit: 'cover' }}
+          />
+          {/* Corner brackets */}
+          {['top-2 left-2', 'top-2 right-2', 'bottom-2 left-2', 'bottom-2 right-2'].map((pos, i) => (
+            <div key={i} className={`absolute ${pos} w-6 h-6`}
+              style={{
+                borderColor: 'var(--c-accent)',
+                borderStyle: 'solid',
+                borderWidth: 0,
+                ...(i === 0 ? { borderTopWidth: 3, borderLeftWidth: 3 } :
+                   i === 1 ? { borderTopWidth: 3, borderRightWidth: 3 } :
+                   i === 2 ? { borderBottomWidth: 3, borderLeftWidth: 3 } :
+                             { borderBottomWidth: 3, borderRightWidth: 3 }),
+              }}
+            />
+          ))}
+        </div>
+
+        <p className="text-center text-sm mt-4" style={{ color: 'rgba(255,255,255,0.7)' }}>
+          Point at a 2FA QR code
+        </p>
+
+        {cameraError && (
+          <div className="mt-3 px-4 py-2.5 rounded-xl text-sm text-center flex items-center gap-2 justify-center"
+            style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.35)', color: '#FCA5A5' }}>
+            <XCircle size={14} />
+            {cameraError}
+          </div>
+        )}
+
+        <button
+          onClick={stopCamera}
+          className="mt-4 w-full py-3 rounded-2xl font-semibold text-sm transition-all"
+          style={{ background: 'rgba(255,255,255,0.1)', color: 'white', border: '1px solid rgba(255,255,255,0.2)' }}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>,
+    document.body
+  ) : null;
+
+  return (
+    <>
+      {modal}
+      {cameraOverlay}
+    </>
   );
 }

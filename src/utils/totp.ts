@@ -90,7 +90,7 @@ export async function generateTOTP(
   }
 }
 
-export function parseTOTPUri(uri: string): { secret: string; name: string; issuer: string } | null {
+export function parseTOTPUri(uri: string): { secret: string; name: string; issuer: string; digits: 6 | 8; period: 30 | 60 } | null {
   try {
     const url = new URL(uri);
     if (url.protocol !== 'otpauth:') return null;
@@ -98,7 +98,11 @@ export function parseTOTPUri(uri: string): { secret: string; name: string; issue
     if (!secret) return null;
     const issuer = url.searchParams.get('issuer') || '';
     const name   = decodeURIComponent(url.pathname.replace('//', '').replace(/^.*?:/, ''));
-    return { secret: secret.toUpperCase().trim(), name, issuer };
+    const digitsRaw = parseInt(url.searchParams.get('digits') || '6', 10);
+    const periodRaw = parseInt(url.searchParams.get('period') || '30', 10);
+    const digits: 6 | 8 = digitsRaw === 8 ? 8 : 6;
+    const period: 30 | 60 = periodRaw === 60 ? 60 : 30;
+    return { secret: secret.toUpperCase().trim(), name, issuer, digits, period };
   } catch {
     return null;
   }

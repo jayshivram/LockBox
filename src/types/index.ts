@@ -67,6 +67,8 @@ export interface VaultEntry {
   tags: string[];
   category: Category;
   totpSecret?: string;
+  totpDigits?: 6 | 8;
+  totpPeriod?: 30 | 60;
   apiKey?: string;
   apiKeyName?: string;
   adminPassword?: string;

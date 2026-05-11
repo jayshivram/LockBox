@@ -4,7 +4,7 @@ import {
   Edit3, Globe, User, Key, Tag, Shield, Clock, ExternalLink,
   AlertTriangle, CheckCircle2, Loader2, Filter, Wifi, Lock, AlertCircle,
   ArrowUpDown, SortAsc, SortDesc, CreditCard, Fingerprint, Building2, FileText,
-  ArrowLeft, Zap
+  ArrowLeft, Zap, Paperclip, Download
 } from 'lucide-react';
 import { useVaultStore } from '../store/vaultStore';
 import type { VaultStore } from '../store/vaultStore';
@@ -13,6 +13,9 @@ import { copyToClipboard, checkPasswordBreach } from '../utils/crypto';
 import type { VaultEntry, Category } from '../types';
 import { EntryModal } from './EntryModal';
 import { requireInlineBiometric, triggerHaptic } from '../utils/capacitor';
+import { loadAttachment } from '../utils/attachmentDb';
+import { generateTOTP } from '../utils/totp';
+import type { VaultAttachment } from '../types';
 
 type SortOption = VaultStore['sortBy'];
 
@@ -106,6 +109,8 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
   const [editOpen, setEditOpen] = useState(false);
   const [breachState, setBreachState] = useState<BreachState>('idle');
   const [breachCount, setBreachCount] = useState(0);
+  // TOTP live code state
+  const [totpState, setTotpState] = useState<{ code: string; remaining: number; progress: number; error?: string }>({ code: '------', remaining: 30, progress: 100 });
   // Bank show/hide state
   const [showAccountNumber, setShowAccountNumber] = useState(false);
   const [showRoutingNumber, setShowRoutingNumber] = useState(false);
@@ -115,7 +120,7 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
   const [showCardPin, setShowCardPin] = useState(false);
   // Identity show/hide state
   const [showIdNumber, setShowIdNumber] = useState(false);
-  const { updateEntry, deleteEntry, settings, duplicateEntry } = useVaultStore();
+  const { updateEntry, deleteEntry, settings, duplicateEntry, dek } = useVaultStore();
 
   /**
    * Gate sensitive field reveals behind biometrics / device PIN.
@@ -164,6 +169,36 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
       updateEntry(entry.id, { isCompromised: false });
     }
   };
+
+  const handleDownloadAttachment = async (att: VaultAttachment) => {
+    if (!dek) return;
+    try {
+      const result = await loadAttachment(att.id, dek);
+      if (!result) return;
+      const url = URL.createObjectURL(result.blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = att.name; a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // silently ignore decrypt failures
+    }
+  };
+
+  // Live TOTP refresh
+  useEffect(() => {
+    if (!entry.totpSecret) return;
+    const refresh = async () => {
+      const result = await generateTOTP(entry.totpSecret!, entry.totpDigits ?? 6, entry.totpPeriod ?? 30);
+      if (result.ok) {
+        setTotpState({ code: result.code, remaining: result.remaining, progress: result.progress });
+      } else {
+        setTotpState(prev => ({ ...prev, error: result.error }));
+      }
+    };
+    refresh();
+    const id = setInterval(refresh, 1000);
+    return () => clearInterval(id);
+  }, [entry.totpSecret, entry.totpDigits, entry.totpPeriod]);
 
   return (
     <div className="h-full overflow-y-auto animate-fade-in">
@@ -217,6 +252,62 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
       </div>
 
       <div className="p-6 space-y-4">
+
+        {/* ── TOTP Live Code ── */}
+        {entry.totpSecret && (
+          <div className="glass-card rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Shield size={13} color="var(--c-accent)" />
+              <span className="text-xs uppercase tracking-widest font-semibold" style={{ color: 'var(--c-text-f)' }}>2FA Code</span>
+              {(entry.totpDigits === 8 || entry.totpPeriod === 60) && (
+                <span className="ml-auto text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--c-hover)', color: 'var(--c-text-f)' }}>
+                  {entry.totpDigits ?? 6}-digit · {entry.totpPeriod ?? 30}s
+                </span>
+              )}
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex-1 min-w-0">
+                <span
+                  className="font-mono text-3xl font-bold tracking-widest"
+                  style={{ color: totpState.remaining <= 5 ? '#EF4444' : 'var(--c-accent)', letterSpacing: '0.15em' }}
+                >
+                  {totpState.error
+                    ? '--- ---'
+                    : totpState.code !== '------'
+                      ? `${totpState.code.slice(0, 3)} ${totpState.code.slice(3)}`
+                      : '--- ---'}
+                </span>
+                {totpState.error ? (
+                  <p className="text-xs mt-1 flex items-center gap-1" style={{ color: '#EF4444' }}>
+                    <AlertCircle size={11} /> {totpState.error}
+                  </p>
+                ) : (
+                  <p className="text-xs mt-1" style={{ color: 'var(--c-text-f)' }}>Refreshes in {totpState.remaining}s</p>
+                )}
+              </div>
+              {/* Timer ring */}
+              <div className="relative flex-shrink-0 w-12 h-12">
+                <svg width="48" height="48" className="totp-ring">
+                  <circle cx="24" cy="24" r={18} fill="none" stroke="var(--c-strength-empty)" strokeWidth="3" />
+                  <circle cx="24" cy="24" r={18} fill="none"
+                    stroke={totpState.remaining <= 5 ? '#EF4444' : totpState.remaining <= 10 ? '#F59E0B' : '#22C55E'}
+                    strokeWidth="3"
+                    strokeDasharray={2 * Math.PI * 18}
+                    strokeDashoffset={2 * Math.PI * 18 * (1 - totpState.progress / 100)}
+                    strokeLinecap="round"
+                    style={{ transition: 'stroke-dashoffset 0.5s linear, stroke 0.5s' }} />
+                </svg>
+                <span
+                  className="absolute inset-0 flex items-center justify-center text-xs font-mono font-bold"
+                  style={{ color: totpState.remaining <= 5 ? '#EF4444' : totpState.remaining <= 10 ? '#F59E0B' : '#22C55E' }}
+                >
+                  {totpState.remaining}
+                </span>
+              </div>
+              <CopyButton text={totpState.code} label="2FA code" />
+            </div>
+          </div>
+        )}
 
         {/* ── WiFi fields ── */}
         {entry.type === 'wifi' && (
@@ -820,6 +911,40 @@ function EntryDetail({ entry }: { entry: VaultEntry }) {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Attachments */}
+        {entry.attachments && entry.attachments.length > 0 && dek && (
+          <div className="glass-card rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Paperclip size={13} color="var(--c-text-m)" />
+              <span className="text-xs uppercase tracking-widest font-semibold" style={{ color: 'var(--c-text-f)' }}>
+                Attachments
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {entry.attachments.map(att => (
+                <div key={att.id} className="flex items-center gap-3 px-3 py-2 rounded-xl"
+                  style={{ background: 'var(--c-input-bg)', border: '1px solid var(--c-border-m)' }}>
+                  <Paperclip size={13} color="var(--c-text-f)" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm truncate" style={{ color: 'var(--c-text)' }}>{att.name}</p>
+                    <p className="text-xs" style={{ color: 'var(--c-text-f)' }}>
+                      {att.size < 1024 ? `${att.size} B` : att.size < 1048576 ? `${(att.size / 1024).toFixed(1)} KB` : `${(att.size / 1048576).toFixed(1)} MB`}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleDownloadAttachment(att)}
+                    className="p-1.5 rounded-lg transition-colors"
+                    style={{ color: 'var(--c-text-m)' }}
+                    title="Download attachment"
+                  >
+                    <Download size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

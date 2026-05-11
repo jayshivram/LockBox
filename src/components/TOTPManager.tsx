@@ -11,14 +11,14 @@ interface TOTPState {
   error?: string;
 }
 
-function TOTPCard({ entryId, name, secret }: { entryId: string; name: string; secret: string }) {
-  const [state, setState] = useState<TOTPState>({ code: '------', remaining: 30, progress: 100 });
+function TOTPCard({ entryId, name, secret, digits = 6, period = 30 }: { entryId: string; name: string; secret: string; digits?: number; period?: number }) {
+  const [state, setState] = useState<TOTPState>({ code: '------', remaining: period, progress: 100 });
   const [copied, setCopied] = useState(false);
   const { deleteEntry } = useVaultStore();
 
   useEffect(() => {
     const refresh = async () => {
-      const result = await generateTOTP(secret);
+      const result = await generateTOTP(secret, digits, period);
       if (result.ok) {
         setState({ code: result.code, remaining: result.remaining, progress: result.progress, error: undefined });
       } else {
@@ -28,7 +28,7 @@ function TOTPCard({ entryId, name, secret }: { entryId: string; name: string; se
     refresh();
     const interval = setInterval(refresh, 1000);
     return () => clearInterval(interval);
-  }, [secret]);
+  }, [secret, digits, period]);
 
   const handleCopy = () => {
     copyToClipboard(state.code);
@@ -45,7 +45,9 @@ function TOTPCard({ entryId, name, secret }: { entryId: string; name: string; se
   const formattedCode = state.error
     ? '--- ---'
     : state.code !== '------'
-      ? `${state.code.slice(0, 3)} ${state.code.slice(3)}`
+      ? state.code.length === 8
+        ? `${state.code.slice(0, 4)} ${state.code.slice(4)}`
+        : `${state.code.slice(0, 3)} ${state.code.slice(3)}`
       : '--- ---';
 
   return (
@@ -227,6 +229,8 @@ export function TOTPManager() {
                 entryId={entry.id}
                 name={entry.name}
                 secret={entry.totpSecret!}
+                digits={entry.totpDigits}
+                period={entry.totpPeriod}
               />
             ))}
           </div>
