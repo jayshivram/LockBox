@@ -44,6 +44,14 @@ export default function App() {
   // biometric prompt twice in rapid succession on fast resume.
   const isForeground = useRef(true);
 
+  /**
+   * Grace-period timer: delays soft/hard lock when the app goes to background.
+   * If the user returns within the grace window, the timer is cancelled and
+   * the vault stays fully unlocked — no biometric prompt, no data loss.
+   * Default grace = 30 s (configurable in Settings → Security).
+   */
+  const backgroundLockRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Apply / remove .light class on <html> whenever the theme setting changes
   useEffect(() => {
     const html = document.documentElement;
@@ -59,32 +67,57 @@ export default function App() {
     if (!isNative()) return;
     setupPrivacyScreen();
 
+    const grace = (settings.backgroundGracePeriodSeconds ?? 30) * 1000;
+
+    const doLock = () => {
+      backgroundLockRef.current = null;
+      if (settings.biometricEnabled && isUnlocked) {
+        // Soft-lock: keep the decrypted vault in RAM but block the UI.
+        softLock();
+      } else if (isUnlocked) {
+        // Biometrics disabled — hard lock on background.
+        lock();
+      }
+    };
+
     const cleanup = setupAppStateListener(
       // ── onBackground ──────────────────────────────────────────────────────
       () => {
         isForeground.current = false;
-        if (settings.biometricEnabled && isUnlocked) {
-          // Soft-lock: keep the decrypted vault in RAM but block the UI.
-          // The biometric gate will re-appear on resume.
-          softLock();
-        } else if (isUnlocked) {
-          // Biometrics disabled — hard lock on background (original behavior).
-          lock();
+        if (!isUnlocked) return; // already locked, nothing to do
+        // Cancel any existing pending lock (re-entry into background)
+        if (backgroundLockRef.current) clearTimeout(backgroundLockRef.current);
+        if (grace > 0) {
+          // Delay locking — if the user returns within the grace period
+          // (e.g. quickly copying from another app), no lock fires at all.
+          backgroundLockRef.current = setTimeout(doLock, grace);
+        } else {
+          doLock();
         }
       },
       // ── onForeground ──────────────────────────────────────────────────────
       () => {
         isForeground.current = true;
-        // Nothing extra needed here: if the vault was soft-locked, isSoftLocked
-        // in the store will already be true and the BiometricGate is rendered.
-        // If it was hard-locked, the unlock screen is already showing.
+        // If the user returned before the grace timer fired, cancel it.
+        // The vault stays fully unlocked — no biometric prompt needed.
+        if (backgroundLockRef.current) {
+          clearTimeout(backgroundLockRef.current);
+          backgroundLockRef.current = null;
+        }
+        // If the vault was already soft-locked (grace expired before resume),
+        // isSoftLocked is already true and BiometricGate handles the rest.
       },
     );
 
-    return () => { cleanup?.(); };
-    // We intentionally include `isUnlocked` and `settings.biometricEnabled`
-    // so the closure always reflects the latest values.
-  }, [lock, softLock, isUnlocked, settings.biometricEnabled]);
+    return () => {
+      cleanup?.();
+      if (backgroundLockRef.current) {
+        clearTimeout(backgroundLockRef.current);
+        backgroundLockRef.current = null;
+      }
+    };
+    // Include grace period in deps so the closure always reflects the latest value.
+  }, [lock, softLock, isUnlocked, settings.biometricEnabled, settings.backgroundGracePeriodSeconds]);
 
   // Set up Electron window blur/focus for soft-lock on desktop
   useEffect(() => {

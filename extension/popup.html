@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LockBox Autofill</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="logo">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+        LockBox
+      </div>
+      <button id="btn-lock" title="Clear stored credentials" class="icon-btn danger">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8h1a4 4 0 0 1 0 8h-1"></path><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path>
+          <line x1="6" y1="1" x2="6" y2="4"></line><line x1="10" y1="1" x2="10" y2="4"></line><line x1="14" y1="1" x2="14" y2="4"></line>
+        </svg>
+      </button>
+    </header>
+
+    <div id="sync-info" class="sync-bar">
+      <span id="sync-status">Not synced yet</span>
+    </div>
+
+    <div id="domain-bar" class="domain-label">
+      <span id="current-domain">—</span>
+    </div>
+
+    <div id="entries-list" class="entries"></div>
+
+    <div id="empty-state" class="empty hidden">
+      <p class="empty-icon">🔑</p>
+      <p class="empty-title">No matches for this site</p>
+      <p class="empty-sub">Sync from LockBox → Settings → Browser Extension</p>
+    </div>
+
+    <div id="no-sync-state" class="empty hidden">
+      <p class="empty-icon">🔒</p>
+      <p class="empty-title">Not synced</p>
+      <p class="empty-sub">Open LockBox → Settings → Browser Extension → Sync to Extension</p>
+    </div>
+
+    <footer>
+      <div id="token-section" class="token-section">
+        <button id="btn-gen-token" class="btn-ghost">Generate Sync Token</button>
+        <div id="token-display" class="token-display hidden">
+          <input id="token-value" type="text" readonly />
+          <button id="btn-copy-token" title="Copy token">Copy</button>
+        </div>
+        <p class="token-hint">Paste this token in LockBox → Settings → Browser Extension, then click Sync.</p>
+      </div>
+      <button id="btn-open-lockbox" class="btn-primary">Open LockBox</button>
+    </footer>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

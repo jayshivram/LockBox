@@ -2,17 +2,24 @@ import { useState, useRef } from 'react';
 import {
   Settings2, Download, Upload, Trash2, Shield, Clock, Clipboard,
   AlertTriangle, CheckCircle2, Lock, Info, KeyRound, Eye, EyeOff,
-  HelpCircle, RefreshCw, FileKey, Sun, Fingerprint, ShieldAlert
+  HelpCircle, RefreshCw, FileKey, Sun, Fingerprint, ShieldAlert,
+  Globe, Cloud, LayoutTemplate, Mail, Puzzle
 } from 'lucide-react';
 import { useVaultStore } from '../store/vaultStore';
 import { deleteVault, encryptExport, decryptImport } from '../utils/crypto';
 import { checkStrength } from '../utils/strength';
 import { isNative, isElectron, isNativeOrElectron, checkBiometric, isBiometricAvailable } from '../utils/capacitor';
+import { clearAllAttachments } from '../utils/attachmentDb';
+import { testWebDAVConnection } from '../utils/webdav';
+import { ImportModal } from './ImportModal';
+import { CustomTemplateManager } from './CustomTemplateManager';
+import type { WebDAVConfig } from '../types';
 
 export function Settings() {
   const {
     settings, updateSettings, exportVault, importVault, lock, entries,
     changeMasterPassword, updateHint, vaultMeta, unlockedViaRecovery, error: storeError, clearError, isLoading,
+    webdavPush, webdavPull, customTemplates,
   } = useVaultStore();
 
   const [exportMsg, setExportMsg]   = useState('');
@@ -43,6 +50,26 @@ export function Settings() {
   // Mobile security
   const [biometricMsg, setBiometricMsg] = useState('');
   const [biometricError, setBiometricError] = useState('');
+
+  // WebDAV sync
+  const currentWebdav = settings?.webdav;
+  const [wdavUrl, setWdavUrl]           = useState(currentWebdav?.url || '');
+  const [wdavUser, setWdavUser]         = useState(currentWebdav?.username || '');
+  const [wdavPass, setWdavPass]         = useState(currentWebdav?.password || '');
+  const [wdavPath, setWdavPath]         = useState(currentWebdav?.path || '/lockbox/vault.json');
+  const [wdavAutoSync, setWdavAutoSync] = useState(currentWebdav?.autoSync ?? false);
+  const [wdavMsg, setWdavMsg]           = useState('');
+  const [wdavError, setWdavError]       = useState('');
+  const [wdavTesting, setWdavTesting]   = useState(false);
+  const [wdavSyncing, setWdavSyncing]   = useState(false);
+
+  // Extension sync
+  const [extSyncMsg, setExtSyncMsg] = useState('');
+  const [syncToken, setSyncToken]   = useState('');
+
+  // Modal state
+  const [showImportModal, setShowImportModal]           = useState(false);
+  const [showTemplateManager, setShowTemplateManager]   = useState(false);
 
   const handleExport = async () => {
     const data = exportVault(false);
@@ -109,11 +136,76 @@ export function Settings() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleDeleteVault = () => {
+  const handleDeleteVault = async () => {
     if (confirm('⚠️ This will permanently delete your entire vault. This CANNOT be undone.\n\nType "DELETE" to confirm.')) {
       const input = prompt('Type DELETE to confirm:');
-      if (input === 'DELETE') { deleteVault(); lock(); window.location.reload(); }
+      if (input === 'DELETE') {
+        await clearAllAttachments().catch(() => {});
+        deleteVault(); lock(); window.location.reload();
+      }
     }
+  };
+
+  const handleSaveWebdav = async () => {
+    const config: WebDAVConfig = { url: wdavUrl.trim(), username: wdavUser.trim(), password: wdavPass, path: wdavPath.trim() || '/lockbox/vault.json', autoSync: wdavAutoSync };
+    await updateSettings({ webdav: config });
+    setWdavMsg('WebDAV settings saved.'); setTimeout(() => setWdavMsg(''), 3000);
+  };
+
+  const handleTestWebdav = async () => {
+    setWdavTesting(true); setWdavError(''); setWdavMsg('');
+    const config: WebDAVConfig = { url: wdavUrl.trim(), username: wdavUser.trim(), password: wdavPass, path: wdavPath.trim() || '/lockbox/vault.json', autoSync: wdavAutoSync };
+    const result = await testWebDAVConnection(config);
+    setWdavTesting(false);
+    if (result.success) setWdavMsg(`Connection successful! (${result.status})`);
+    else setWdavError(result.error || 'Connection failed');
+  };
+
+  const handleWebdavPush = async () => {
+    setWdavSyncing(true); setWdavError(''); setWdavMsg('');
+    try { await webdavPush(); setWdavMsg('Vault pushed to WebDAV.'); setTimeout(() => setWdavMsg(''), 4000); }
+    catch (e) { setWdavError(e instanceof Error ? e.message : 'Push failed'); }
+    setWdavSyncing(false);
+  };
+
+  const handleWebdavPull = async () => {
+    if (!confirm('Pull vault from WebDAV? This will overwrite your local vault. Make sure you have a backup.')) return;
+    setWdavSyncing(true); setWdavError(''); setWdavMsg('');
+    try { await webdavPull(); setWdavMsg('Vault pulled from WebDAV.'); setTimeout(() => setWdavMsg(''), 4000); }
+    catch (e) { setWdavError(e instanceof Error ? e.message : 'Pull failed'); }
+    setWdavSyncing(false);
+  };
+
+  const handleEmailBackup = async () => {
+    const data = exportVault(false);
+    let content: string;
+    let filename: string;
+    if (exportPass) {
+      content = await encryptExport(data, exportPass);
+      filename = `lockbox-encrypted-${new Date().toISOString().slice(0, 10)}.json`;
+    } else {
+      content = data;
+      filename = `lockbox-export-${new Date().toISOString().slice(0, 10)}.json`;
+    }
+    const blob = new Blob([content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+    const subject = encodeURIComponent('LockBox Vault Backup');
+    const body = encodeURIComponent(`Please find the LockBox vault backup attached.\n\nFilename: ${filename}\n\nKeep this file in a safe location.`);
+    window.open(`mailto:?subject=${subject}&body=${body}`);
+  };
+
+  const handleSyncExtension = () => {
+    if (!syncToken.trim()) {
+      setExtSyncMsg('Enter the sync token from the extension popup first.');
+      setTimeout(() => setExtSyncMsg(''), 5000);
+      return;
+    }
+    const message = { type: 'LOCKBOX_SYNC', entries, token: syncToken.trim() };
+    window.postMessage(message, window.location.origin);
+    setExtSyncMsg(`Syncing ${entries.length} entries… Check the extension popup to confirm.`);
+    setTimeout(() => setExtSyncMsg(''), 6000);
   };
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -155,6 +247,7 @@ export function Settings() {
   );
 
   return (
+    <>
     <div className="h-full overflow-y-auto p-6 animate-fade-in">
       <div className="max-w-2xl mx-auto space-y-6">
         <div>
@@ -216,6 +309,18 @@ export function Settings() {
               <option value={15}>15 minutes</option>
               <option value={30}>30 minutes</option>
               <option value={60}>1 hour</option>
+            </select>
+          </SettingRow>
+
+          <SettingRow icon={Clock} label="App-Switch Grace Period" description="Stay unlocked when briefly switching to another app — prevents data loss when copying from clipboard">
+            <select value={settings.backgroundGracePeriodSeconds ?? 30}
+              onChange={e => updateSettings({ backgroundGracePeriodSeconds: +e.target.value })}
+              className="input-field w-40 py-2 text-sm">
+              <option value={0}>Immediate</option>
+              <option value={15}>15 seconds</option>
+              <option value={30}>30 seconds</option>
+              <option value={60}>1 minute</option>
+              <option value={120}>2 minutes</option>
             </select>
           </SettingRow>
 
@@ -413,15 +518,11 @@ export function Settings() {
             <div className="p-4 rounded-xl" style={{ background: 'var(--c-input-bg)', border: '1px solid var(--c-border-m)' }}>
               <p className="text-sm font-medium mb-1" style={{ color: 'var(--c-text)' }}>Import Entries</p>
               <p className="text-xs mb-3" style={{ color: 'var(--c-text-f)' }}>
-                LockBox JSON or encrypted export · Max 5 MB
+                Import from LockBox, LastPass, Bitwarden, 1Password, Chrome, Dashlane, KeePass and more.
               </p>
-              <input value={importPass} onChange={e => setImportPass(e.target.value)}
-                type="password" className="input-field text-sm mb-3"
-                placeholder="Passphrase (only needed for encrypted exports)" />
-              <button onClick={() => fileInputRef.current?.click()} className="btn-ghost text-sm">
-                <Upload size={14} /> Choose File &amp; Import
+              <button onClick={() => setShowImportModal(true)} className="btn-ghost text-sm">
+                <Upload size={14} /> Import Passwords…
               </button>
-              <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
             </div>
 
             {exportMsg && (
@@ -448,6 +549,149 @@ export function Settings() {
               <p>Plain JSON exports are unencrypted. Use the encrypted option or keep the file offline and secure. Password history is excluded from exports by default.</p>
             </div>
           </div>
+        </div>
+
+        {/* ── WebDAV Sync ── */}
+        <div className="glass-card rounded-2xl p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Globe size={16} color="var(--c-accent)" />
+            <h2 className="font-semibold" style={{ color: 'var(--c-text)' }}>WebDAV Cloud Sync</h2>
+          </div>
+          <p className="text-xs" style={{ color: 'var(--c-text-m)' }}>
+            Self-hosted, zero-knowledge sync with Nextcloud, ownCloud, or any WebDAV server. Your vault is always encrypted before upload.
+          </p>
+          <div className="space-y-3">
+            <div>
+              <label className="label-text">Server URL</label>
+              <input value={wdavUrl} onChange={e => setWdavUrl(e.target.value)}
+                className="input-field mt-1.5 text-sm" placeholder="https://nextcloud.example.com/remote.php/dav/files/username" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label-text">Username</label>
+                <input value={wdavUser} onChange={e => setWdavUser(e.target.value)}
+                  className="input-field mt-1.5 text-sm" placeholder="username" />
+              </div>
+              <div>
+                <label className="label-text">Password / App Password</label>
+                <input value={wdavPass} onChange={e => setWdavPass(e.target.value)}
+                  type="password" className="input-field mt-1.5 text-sm" placeholder="••••••••" />
+              </div>
+            </div>
+            <div>
+              <label className="label-text">Remote Path</label>
+              <input value={wdavPath} onChange={e => setWdavPath(e.target.value)}
+                className="input-field mt-1.5 text-sm font-mono" placeholder="/lockbox/vault.json" />
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={wdavAutoSync} onChange={e => setWdavAutoSync(e.target.checked)} className="rounded" />
+              <span className="text-sm" style={{ color: 'var(--c-text-m)' }}>Auto-push after every save</span>
+            </label>
+          </div>
+          {wdavMsg && <p className="text-xs px-3 py-2 rounded-lg" style={{ color: '#22C55E', background: 'rgba(34,197,94,0.08)' }}>{wdavMsg}</p>}
+          {wdavError && <p className="text-xs px-3 py-2 rounded-lg" style={{ color: '#EF4444', background: 'rgba(239,68,68,0.08)' }}>{wdavError}</p>}
+          <div className="flex flex-wrap gap-2">
+            <button onClick={handleSaveWebdav} className="btn-ghost text-sm"><Cloud size={13} /> Save Settings</button>
+            <button onClick={handleTestWebdav} disabled={wdavTesting || !wdavUrl} className="btn-ghost text-sm">
+              <RefreshCw size={13} className={wdavTesting ? 'animate-spin' : ''} /> {wdavTesting ? 'Testing…' : 'Test Connection'}
+            </button>
+            <button onClick={handleWebdavPush} disabled={wdavSyncing || !currentWebdav?.url} className="btn-ghost text-sm">
+              <Upload size={13} /> Push to Server
+            </button>
+            <button onClick={handleWebdavPull} disabled={wdavSyncing || !currentWebdav?.url} className="btn-ghost text-sm">
+              <Download size={13} /> Pull from Server
+            </button>
+          </div>
+          {settings?.webdav?.lastSyncAt && (
+            <p className="text-xs" style={{ color: 'var(--c-text-f)' }}>
+              Last synced: {new Date(settings.webdav.lastSyncAt).toLocaleString()}
+            </p>
+          )}
+        </div>
+
+        {/* ── Custom Entry Types ── */}
+        <div className="glass-card rounded-2xl p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <LayoutTemplate size={16} color="var(--c-accent)" />
+            <h2 className="font-semibold" style={{ color: 'var(--c-text)' }}>Custom Entry Types</h2>
+          </div>
+          <p className="text-xs" style={{ color: 'var(--c-text-m)' }}>
+            Define custom templates for entry types not covered by the built-ins: Medical Insurance, Loyalty Cards, Software Licenses, and more.
+          </p>
+          <div className="flex items-center justify-between">
+            <p className="text-sm" style={{ color: 'var(--c-text-m)' }}>
+              {customTemplates.length} template{customTemplates.length !== 1 ? 's' : ''} defined
+            </p>
+            <button onClick={() => setShowTemplateManager(true)} className="btn-ghost text-sm">
+              <LayoutTemplate size={13} /> Manage Templates
+            </button>
+          </div>
+        </div>
+
+        {/* ── Email Backup ── */}
+        <div className="glass-card rounded-2xl p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Mail size={16} color="var(--c-accent)" />
+            <h2 className="font-semibold" style={{ color: 'var(--c-text)' }}>Email Backup</h2>
+          </div>
+          <p className="text-xs" style={{ color: 'var(--c-text-m)' }}>
+            Download an encrypted vault backup and open your email client to attach and send it to yourself.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {(['plain', 'encrypted'] as const).map(m => (
+              <button key={m} onClick={() => setExportMode(m)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                style={{
+                  background: exportMode === m ? 'var(--c-accent-bgm)' : 'var(--c-hover)',
+                  color: exportMode === m ? 'var(--c-accent)' : 'var(--c-text-m)',
+                  border: `1px solid ${exportMode === m ? 'var(--c-accent-bd)' : 'var(--c-border-s)'}`,
+                }}>
+                {m === 'plain' ? '📄 Plain JSON' : '🔒 Encrypted JSON'}
+              </button>
+            ))}
+          </div>
+          {exportMode === 'encrypted' && (
+            <input value={exportPass} onChange={e => setExportPass(e.target.value)}
+              type="password" className="input-field text-sm"
+              placeholder="Passphrase to encrypt the backup" />
+          )}
+          <button onClick={handleEmailBackup}
+            disabled={exportMode === 'encrypted' && !exportPass}
+            className="btn-ghost text-sm">
+            <Mail size={13} /> Backup to Email…
+          </button>
+        </div>
+
+        {/* ── Browser Extension Sync ── */}
+        <div className="glass-card rounded-2xl p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Puzzle size={16} color="var(--c-accent)" />
+            <h2 className="font-semibold" style={{ color: 'var(--c-text)' }}>Browser Extension</h2>
+          </div>
+          <p className="text-xs" style={{ color: 'var(--c-text-m)' }}>
+            The LockBox extension autofills passwords on any site. Install it as an unpacked extension in Chrome / Edge, then sync your entries.
+          </p>
+          <ol className="text-xs space-y-1 list-decimal list-inside" style={{ color: 'var(--c-text-m)' }}>
+            <li>Install the <code className="font-mono px-1 rounded" style={{ background: 'var(--c-hover)' }}>extension/</code> folder as an unpacked Chrome / Edge extension</li>
+            <li>Click the LockBox extension icon → click <strong>Generate Sync Token</strong></li>
+            <li>Copy the token and paste it below</li>
+            <li>Click <strong>Sync to Extension</strong></li>
+          </ol>
+          <div className="flex gap-2 items-center">
+            <input
+              type="text"
+              value={syncToken}
+              onChange={e => setSyncToken(e.target.value)}
+              placeholder="Paste sync token from extension popup…"
+              className="input-base flex-1 font-mono text-xs"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+          {extSyncMsg && <p className="text-xs px-3 py-2 rounded-lg" style={{ color: '#22C55E', background: 'rgba(34,197,94,0.08)' }}>{extSyncMsg}</p>}
+          <button onClick={handleSyncExtension} className="btn-ghost text-sm">
+            <Puzzle size={13} /> Sync to Extension
+          </button>
         </div>
 
         {/* Mobile / Desktop Security — native or Electron only */}
@@ -610,5 +854,9 @@ export function Settings() {
 
       <style>{``}</style>
     </div>
+
+    {showImportModal && <ImportModal onClose={() => setShowImportModal(false)} />}
+    {showTemplateManager && <CustomTemplateManager onClose={() => setShowTemplateManager(false)} />}
+  </>
   );
 }

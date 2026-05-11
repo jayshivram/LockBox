@@ -1,10 +1,59 @@
 export type Category = 'All' | 'Personal' | 'Work' | 'Finance' | 'Crypto' | 'Social' | 'Servers' | 'API Keys' | 'Network';
-export type EntryType = 'login' | 'note' | 'totp' | 'apikey' | 'wifi' | 'bank' | 'identity';
+export type EntryType = 'login' | 'note' | 'totp' | 'apikey' | 'wifi' | 'bank' | 'identity' | 'passkey' | 'custom';
 export type View = 'dashboard' | 'vault' | 'generator' | 'totp' | 'notes' | 'settings';
 
 export interface PasswordHistoryItem {
   password: string;
   changedAt: string;
+}
+
+/** A single user-defined field on a custom entry */
+export interface CustomField {
+  id: string;
+  label: string;
+  value: string;
+  /** 'password' fields are hidden by default; 'totp' shows a live TOTP code */
+  type: 'text' | 'password' | 'url' | 'textarea' | 'totp';
+}
+
+/** Metadata for a file attached to a vault entry.
+ *  The encrypted file data is stored separately in IndexedDB (see attachmentDb). */
+export interface VaultAttachment {
+  id: string;
+  name: string;        // original filename
+  mimeType: string;    // e.g. "image/jpeg", "application/pdf"
+  size: number;        // original file size in bytes
+  createdAt: string;
+}
+
+/** Definition of a single field in a custom entry template */
+export interface CustomFieldDefinition {
+  id: string;
+  label: string;
+  type: 'text' | 'password' | 'url' | 'textarea' | 'totp';
+  placeholder?: string;
+  required?: boolean;
+}
+
+/** A user-defined entry template (e.g. "Medical Insurance", "Loyalty Card") */
+export interface CustomEntryTemplate {
+  id: string;
+  name: string;
+  icon: string;          // emoji icon
+  defaultCategory: Category;
+  fields: CustomFieldDefinition[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** WebDAV sync configuration stored inside VaultSettings */
+export interface WebDAVConfig {
+  url: string;           // WebDAV endpoint base URL (e.g. https://cloud.example.com/remote.php/dav/files/user)
+  username: string;
+  password: string;      // stored encrypted inside the vault
+  path: string;          // file path on the server (e.g. /lockbox/vault.json)
+  autoSync: boolean;     // sync automatically on unlock/lock
+  lastSyncAt?: string;   // ISO timestamp of last successful sync
 }
 
 export interface VaultEntry {
@@ -28,6 +77,7 @@ export interface VaultEntry {
   isFavorite?: boolean;
   isCompromised?: boolean;
   lastBreachCheck?: string;
+  lastUsedAt?: string;
   // Bank / financial fields
   bankName?: string;
   accountType?: string;
@@ -51,6 +101,19 @@ export interface VaultEntry {
   issueDate?: string;
   expiryDate?: string;
   address?: string;
+  // Passkey / FIDO2 fields
+  passkeyRpId?: string;           // relying party domain (e.g. "github.com")
+  passkeyCredentialId?: string;   // base64url credential ID
+  passkeyUsername?: string;       // username used when registering passkey
+  passkeyDisplayName?: string;    // human-readable display name
+  passkeyPublicKey?: string;      // base64url public key (reference only)
+  passkeyAlgorithm?: string;      // e.g. "ES256", "RS256"
+  passkeyBackedUp?: boolean;      // whether synced by a platform passkey manager
+  // Custom entry fields
+  customTypeId?: string;          // references a CustomEntryTemplate.id
+  customFields?: CustomField[];   // dynamic user-defined fields
+  // File attachments (metadata only; encrypted data in IndexedDB)
+  attachments?: VaultAttachment[];
 }
 
 export interface VaultSettings {
@@ -62,6 +125,8 @@ export interface VaultSettings {
   wipeAfterAttempts: number; // 0 = disabled
   requireBiometricForVaultTab: boolean; // gate vault tab with biometric on native
   passwordAgeDays: number; // warn when password older than N days (0 = off)
+  backgroundGracePeriodSeconds: number; // stay unlocked when briefly switching apps (0 = immediate)
+  webdav?: WebDAVConfig; // optional WebDAV sync configuration
 }
 
 /**
@@ -88,6 +153,7 @@ export interface VaultData {
   entries: VaultEntry[];
   settings: VaultSettings;
   version: string;
+  customTemplates?: CustomEntryTemplate[];
 }
 
 export interface StrengthResult {

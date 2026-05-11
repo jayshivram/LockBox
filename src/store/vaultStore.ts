@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { VaultEntry, VaultSettings, VaultData, Category, View, EncryptedVault } from '../types';
+import type { VaultEntry, VaultSettings, VaultData, Category, View, EncryptedVault, CustomEntryTemplate, CustomField } from '../types';
 import {
   generateDEK, deriveKEK, wrapDEK, unwrapDEK,
   deriveKey,   // legacy v1 only
@@ -10,6 +10,9 @@ import {
 } from '../utils/crypto';
 import { backupToPreferences } from '../utils/storage';
 import { generateId } from '../utils/generator';
+import { detectImportFormat, parseImportFile } from '../utils/importParsers';
+import { pushVaultToWebDAV, pullVaultFromWebDAV } from '../utils/webdav';
+import { deleteAttachments, clearAllAttachments } from '../utils/attachmentDb';
 
 // Held outside Zustand so it's never visible in React DevTools or state snapshots.
 let _sessionPw = '';
@@ -23,6 +26,7 @@ const DEFAULT_SETTINGS: VaultSettings = {
   wipeAfterAttempts: 0,
   requireBiometricForVaultTab: true,
   passwordAgeDays: 90,
+  backgroundGracePeriodSeconds: 30,
 };
 
 // Undo-delete timer held outside Zustand to avoid serialisation issues
@@ -74,6 +78,7 @@ export interface VaultStore {
   // Vault data
   entries: VaultEntry[];
   settings: VaultSettings;
+  customTemplates: CustomEntryTemplate[];
 
   // UI state
   currentView: View;
@@ -81,7 +86,7 @@ export interface VaultStore {
   searchQuery: string;
   selectedEntryId: string | null;
   activeFilterType: string;
-  sortBy: 'name-asc' | 'name-desc' | 'newest' | 'oldest' | 'strength';
+  sortBy: 'name-asc' | 'name-desc' | 'newest' | 'oldest' | 'strength' | 'last-used';
 
   // Auto-lock
   lockTimer: ReturnType<typeof setTimeout> | null;
@@ -131,6 +136,21 @@ export interface VaultStore {
 
   // Entry duplication
   duplicateEntry: (id: string) => Promise<void>;
+
+  // Last-used tracking (lightweight — persisted with next vault write)
+  updateLastUsed: (id: string) => void;
+
+  // Custom entry templates
+  addCustomTemplate: (tpl: Omit<CustomEntryTemplate, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>;
+  updateCustomTemplate: (id: string, updates: Partial<CustomEntryTemplate>) => Promise<void>;
+  deleteCustomTemplate: (id: string) => Promise<void>;
+
+  // WebDAV sync
+  webdavPush: () => Promise<void>;
+  webdavPull: () => Promise<void>;
+
+  // External-format import (LastPass, Bitwarden, etc.)
+  importExternal: (content: string, filename: string) => Promise<{ count: number }>;
 }
 
 const _initLockout = loadLockoutState();
@@ -151,6 +171,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   lockoutUntil: _initLockout.lockoutUntil,
   entries: [],
   settings: DEFAULT_SETTINGS,
+  customTemplates: [],
   currentView: 'dashboard',
   selectedCategory: 'All',
   searchQuery: '',
@@ -264,6 +285,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         dek, salt: saltPw, vaultMeta: meta,
         entries: data.entries || [],
         settings: loadedSettings,
+        customTemplates: data.customTemplates || [],
         isLoading: false,
         currentView: 'dashboard',
         failedAttempts: 0, lockoutUntil: 0,
@@ -360,6 +382,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         dek, salt: saltPw, vaultMeta: meta,
         entries: data.entries || [],
         settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) },
+        customTemplates: data.customTemplates || [],
         isLoading: false,
         currentView: 'settings', // direct them to change their password
         failedAttempts: 0, lockoutUntil: 0,
@@ -434,9 +457,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
 
   // ── Save ─────────────────────────────────────────────────────────────────
   saveVault: async () => {
-    const { entries, settings, dek, salt, vaultMeta } = get();
+    const { entries, settings, dek, salt, vaultMeta, customTemplates } = get();
     if (!dek || !salt) return;
-    const data: VaultData = { entries, settings, version: '1.0.0' };
+    const data: VaultData = { entries, settings, version: '1.0.0', customTemplates };
     const encrypted = await encryptVault(data, dek, salt);
     if (vaultMeta) {
       saveEncryptedVault({
@@ -482,8 +505,12 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     await get().saveVault();
     // Auto-clear the undo buffer after 5 seconds
     if (_undoTimer) clearTimeout(_undoTimer);
-    _undoTimer = setTimeout(() => {
+    _undoTimer = setTimeout(async () => {
       useVaultStore.setState({ deletedEntry: null });
+      // Permanently delete attachments once the undo window expires
+      if (entry?.attachments?.length) {
+        await deleteAttachments(entry.attachments.map(a => a.id));
+      }
       _undoTimer = null;
     }, 5000);
   },
@@ -534,7 +561,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
   importVault: async (data) => {
     if (data.length > MAX_IMPORT_BYTES) throw new Error('File too large (max 5 MB)');
     const parsed = JSON.parse(data);
-    const VALID_TYPES = new Set(['login', 'note', 'totp', 'apikey', 'wifi', 'bank', 'identity']);
+    const VALID_TYPES = new Set(['login', 'note', 'totp', 'apikey', 'wifi', 'bank', 'identity', 'passkey', 'custom']);
     const VALID_CATS  = new Set(['All', 'Personal', 'Work', 'Finance', 'Crypto', 'Social', 'Servers', 'API Keys', 'Network']);
     const now = new Date().toISOString();
     const raw: unknown[] = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.entries) ? parsed.entries : []);
@@ -550,6 +577,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         ? (v as unknown[]).filter(h => h && typeof h === 'object').slice(0, 10)
             .map(h => { const hh = h as Record<string, unknown>; return { password: str(hh['password'], '', 1000), changedAt: str(hh['changedAt'], now, 100) }; })
             .filter(h => h.password.length > 0)
+        : [];
+      const customFields = (v: unknown): CustomField[] => Array.isArray(v)
+        ? (v as unknown[]).filter(f => f && typeof f === 'object').slice(0, 50)
+            .map(f => { const ff = f as Record<string, unknown>; const cfType = str(ff['type']); return { id: str(ff['id'], generateId()), label: str(ff['label'], '', 200), value: str(ff['value'], '', 5000), type: (['text','password','url','textarea','totp'] as const).includes(cfType as never) ? cfType as CustomField['type'] : 'text' }; })
         : [];
       return {
         id: generateId(),
@@ -589,6 +620,19 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         issueDate:       str(e['issueDate'], '', 20),
         expiryDate:      str(e['expiryDate'], '', 20),
         address:         str(e['address'], '', 1000),
+        // Passkey fields
+        passkeyRpId:        str(e['passkeyRpId'], '', 253),
+        passkeyCredentialId:str(e['passkeyCredentialId'], '', 2048),
+        passkeyUsername:    str(e['passkeyUsername'], '', 256),
+        passkeyDisplayName: str(e['passkeyDisplayName'], '', 256),
+        passkeyPublicKey:   str(e['passkeyPublicKey'], '', 4096),
+        passkeyAlgorithm:   str(e['passkeyAlgorithm'], '', 20),
+        passkeyBackedUp:    bool(e['passkeyBackedUp']),
+        // Custom fields
+        customTypeId:  str(e['customTypeId'], '', 100),
+        customFields:  customFields(e['customFields']),
+        // Attachments (metadata only — data not importable this way)
+        attachments: [],
         isFavorite:     bool(e['isFavorite']),
         isCompromised:  bool(e['isCompromised']),
         passwordHistory: hist(e['passwordHistory']),
@@ -679,5 +723,107 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     };
     set(s => ({ entries: [...s.entries, duplicate], selectedEntryId: duplicate.id }));
     await get().saveVault();
+  },
+
+  // ── Last-used tracking ────────────────────────────────────────────────────
+  // Updates in-memory immediately; persisted to disk on next vault write.
+  updateLastUsed: (id) => {
+    const ts = new Date().toISOString();
+    set(s => ({
+      entries: s.entries.map(e => e.id === id ? { ...e, lastUsedAt: ts } : e),
+    }));
+  },
+
+  // ── Custom entry templates ────────────────────────────────────────────────
+  addCustomTemplate: async (tpl) => {
+    const now = new Date().toISOString();
+    const full: CustomEntryTemplate = { ...tpl, id: generateId(), createdAt: now, updatedAt: now };
+    set(s => ({ customTemplates: [...s.customTemplates, full] }));
+    await get().saveVault();
+  },
+
+  updateCustomTemplate: async (id, updates) => {
+    set(s => ({
+      customTemplates: s.customTemplates.map(t =>
+        t.id === id ? { ...t, ...updates, updatedAt: new Date().toISOString() } : t
+      ),
+    }));
+    await get().saveVault();
+  },
+
+  deleteCustomTemplate: async (id) => {
+    set(s => ({ customTemplates: s.customTemplates.filter(t => t.id !== id) }));
+    await get().saveVault();
+  },
+
+  // ── WebDAV sync ───────────────────────────────────────────────────────────
+  webdavPush: async () => {
+    const { settings } = get();
+    const config = settings.webdav;
+    if (!config?.url) throw new Error('WebDAV not configured');
+    const vaultJson = localStorage.getItem('lockbox_vault');
+    if (!vaultJson) throw new Error('No vault to push');
+    await pushVaultToWebDAV(config, vaultJson);
+    // Update lastSyncAt timestamp
+    await get().updateSettings({ webdav: { ...config, lastSyncAt: new Date().toISOString() } });
+  },
+
+  webdavPull: async () => {
+    const { settings } = get();
+    const config = settings.webdav;
+    if (!config?.url) throw new Error('WebDAV not configured');
+    const remoteJson = await pullVaultFromWebDAV(config);
+    // Validate the pulled data is a valid encrypted vault JSON before storing
+    const parsed = JSON.parse(remoteJson);
+    if (!parsed.ciphertext || !parsed.iv || !parsed.salt) {
+      throw new Error('Invalid vault data received from WebDAV server');
+    }
+    // Overwrite local vault storage and reload
+    localStorage.setItem('lockbox_vault', remoteJson);
+    await get().updateSettings({ webdav: { ...config, lastSyncAt: new Date().toISOString() } });
+  },
+
+  // ── External format import (LastPass, Bitwarden, Chrome, etc.) ───────────
+  importExternal: async (content, filename) => {
+    if (content.length > MAX_IMPORT_BYTES) throw new Error('Import file too large (max 5 MB)');
+    const format = detectImportFormat(content, filename);
+    if (format === 'lockbox') {
+      // Delegate to existing LockBox import
+      await get().importVault(content);
+      const count = JSON.parse(content)?.entries?.length ?? 0;
+      return { count };
+    }
+    const parsed = parseImportFile(content, format);
+    if (!parsed.length) throw new Error('No entries found in the file');
+    const now = new Date().toISOString();
+    const entries: VaultEntry[] = parsed.map(p => ({
+      id: generateId(),
+      type: p.type ?? 'login',
+      name: p.name,
+      username: p.username ?? '',
+      password: p.password ?? '',
+      url: p.url ?? '',
+      notes: p.notes ?? '',
+      tags: p.tags ?? [],
+      category: 'Personal',
+      totpSecret: p.totpSecret,
+      apiKey: '',
+      apiKeyName: '',
+      wifiSsid: '',
+      adminPassword: '',
+      bankName: '', accountType: '', accountNumber: '', routingNumber: '',
+      iban: '', swiftBic: '', cardNumber: '', cardExpiry: '', cardCvv: '',
+      cardholderName: '', cardPin: '',
+      idType: '', idNumber: '', fullName: '', dateOfBirth: '', nationality: '',
+      issuingCountry: '', issuingAuthority: '', issueDate: '', expiryDate: '', address: '',
+      passkeyRpId: '', passkeyCredentialId: '', passkeyUsername: '', passkeyDisplayName: '',
+      passkeyPublicKey: '', passkeyAlgorithm: '', passkeyBackedUp: false,
+      customTypeId: '', customFields: [], attachments: [],
+      isFavorite: false, isCompromised: false, passwordHistory: [],
+      createdAt: now, updatedAt: now,
+    }));
+    set(s => ({ entries: [...s.entries, ...entries] }));
+    await get().saveVault();
+    return { count: entries.length };
   },
 }));

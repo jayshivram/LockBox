@@ -1,7 +1,7 @@
 {
   "name": "lockbox",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.4",
   "type": "module",
   "description": "LockBox - Offline Local Password Manager",
   "main": "electron/main.cjs",
@@ -51,6 +51,7 @@
     "appId": "com.lockbox.app",
     "productName": "LockBox",
     "icon": "public/icon.png",
+    "asar": false,
     "directories": {
       "output": "dist-electron"
     },
@@ -68,7 +69,10 @@
       "signAndEditExecutable": false
     },
     "linux": {
-      "target": "AppImage"
+      "category": "Utility",
+      "target": [
+        {"target": "tar.gz", "arch": ["x64"]}
+      ]
     }
   }
 }

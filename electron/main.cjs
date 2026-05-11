@@ -35,9 +35,9 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
-  // Open external links in browser
+  // Open external links in browser — only allow http/https to prevent file:// and javascript: abuse
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
 
@@ -113,11 +113,17 @@ async function promptDesktopBiometric(reason) {
   }
 
   if (process.platform === 'win32') {
-    const encodedReason = reason.replace(/'/g, '');
+    // Sanitize the reason string and pass it via Base64 to prevent PowerShell injection.
+    // Only allow safe printable characters; truncate to 80 chars.
+    const safeReason = String(reason ?? '')
+      .replace(/[^a-zA-Z0-9 .,!?'\-]/g, '')
+      .slice(0, 80) || 'Verify your identity';
+    const reasonB64 = Buffer.from(safeReason, 'utf8').toString('base64');
     const code = await runPS(`
       try {
         $null = [Windows.Security.Credentials.UI.UserConsentVerifier,Windows.Security.Credentials.UI,ContentType=WindowsRuntime]
-        $r = [Windows.Security.Credentials.UI.UserConsentVerifier]::RequestVerificationAsync('${encodedReason}').GetAwaiter().GetResult()
+        $reason = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${reasonB64}'))
+        $r = [Windows.Security.Credentials.UI.UserConsentVerifier]::RequestVerificationAsync($reason).GetAwaiter().GetResult()
         if ($r -eq 'Verified') { exit 0 }
         elseif ($r -eq 'DeviceNotPresent' -or $r -eq 'DisabledByPolicy' -or $r -eq 'NotConfiguredForUser') { exit 2 }
         else { exit 1 }
@@ -146,14 +152,16 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// Security: prevent new window creation
+// Security: prevent new window creation and block unexpected navigations/redirects
 app.on('web-contents-created', (_, contents) => {
-  contents.on('will-navigate', (event, url) => {
+  function guardNavigation(event, url) {
     const distDir = `file://${path.join(__dirname, '../dist').replace(/\\/g, '/')}`;
     const allowedDev  = isDev && url.startsWith('http://localhost:5173');
     const allowedProd = !isDev && url.startsWith(distDir);
     if (!allowedDev && !allowedProd) {
       event.preventDefault();
     }
-  });
+  }
+  contents.on('will-navigate', guardNavigation);
+  contents.on('will-redirect', guardNavigation);
 });

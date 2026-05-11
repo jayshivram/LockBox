@@ -1,6 +1,10 @@
 node_modules/
 dist/
 dist-electron/
+release-assets/
+build-log.txt
+get-logs.ps1
+get-logs2.ps1
 android/build/
 android/app/build/
 android/.gradle/

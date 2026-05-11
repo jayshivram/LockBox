@@ -1,12 +1,36 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Plus, Zap, Eye, EyeOff, Wifi, CreditCard, Fingerprint } from 'lucide-react';
+import { X, Plus, Zap, Eye, EyeOff, Wifi, CreditCard, Fingerprint, Clipboard, Paperclip, Trash2, Download, KeySquare, LayoutTemplate } from 'lucide-react';
 import { useVaultStore } from '../store/vaultStore';
 import { checkStrength } from '../utils/strength';
-import { generatePassword } from '../utils/generator';
-import type { VaultEntry, Category, EntryType } from '../types';
+import { generatePassword, generateId } from '../utils/generator';
+import { saveAttachment, loadAttachment, deleteAttachment, MAX_ATTACHMENT_BYTES } from '../utils/attachmentDb';
+import type { VaultEntry, Category, EntryType, CustomField, VaultAttachment } from '../types';
 
 const CATEGORIES: Category[] = ['Personal', 'Work', 'Finance', 'Crypto', 'Social', 'Servers', 'API Keys', 'Network'];
+
+/** One-tap paste from the device clipboard into a form field. */
+function PasteButton({ onPaste }: { onPaste: (text: string) => void }) {
+  const handlePaste = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) onPaste(text.trim());
+    } catch {
+      // Clipboard read denied or unavailable — fail silently
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={handlePaste}
+      className="flex-shrink-0 p-1.5 rounded transition-all"
+      style={{ color: 'var(--c-text-f)' }}
+      title="Paste from clipboard"
+    >
+      <Clipboard size={13} />
+    </button>
+  );
+}
 
 interface EntryModalProps {
   mode: 'add' | 'edit';
@@ -15,7 +39,7 @@ interface EntryModalProps {
 }
 
 export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
-  const { addEntry, updateEntry } = useVaultStore();
+  const { addEntry, updateEntry, dek, customTemplates } = useVaultStore();
   const [type, setType] = useState<EntryType>(entry?.type || 'login');
   const [name, setName] = useState(entry?.name || '');
   const [username, setUsername] = useState(entry?.username || '');
@@ -62,10 +86,30 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
   const [expiryDate, setExpiryDate] = useState(entry?.expiryDate || '');
   const [address, setAddress] = useState(entry?.address || '');
   const [showIdNumber, setShowIdNumber] = useState(false);
+  // Passkey-specific fields
+  const [passkeyRpId, setPasskeyRpId]               = useState(entry?.passkeyRpId || '');
+  const [passkeyCredentialId, setPasskeyCredentialId] = useState(entry?.passkeyCredentialId || '');
+  const [passkeyUsername, setPasskeyUsername]         = useState(entry?.passkeyUsername || '');
+  const [passkeyDisplayName, setPasskeyDisplayName]   = useState(entry?.passkeyDisplayName || '');
+  const [passkeyPublicKey, setPasskeyPublicKey]       = useState(entry?.passkeyPublicKey || '');
+  const [passkeyAlgorithm, setPasskeyAlgorithm]       = useState(entry?.passkeyAlgorithm || 'ES256');
+  const [passkeyBackedUp, setPasskeyBackedUp]         = useState(entry?.passkeyBackedUp ?? false);
+  const [showPasskeyPublicKey, setShowPasskeyPublicKey] = useState(false);
+  // Custom entry fields
+  const [customTypeId, setCustomTypeId] = useState(entry?.customTypeId || '');
+  const [customFields, setCustomFields] = useState<CustomField[]>(entry?.customFields || []);
+  // Attachments
+  const [attachments, setAttachments] = useState<VaultAttachment[]>(entry?.attachments || []);
+  const [attachmentError, setAttachmentError] = useState('');
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
 
   const strength = password ? checkStrength(password) : null;
   const adminStrength = adminPassword ? checkStrength(adminPassword) : null;
+
+  // Pending attachment IDs to delete from IndexedDB if entry is saved without them
+  const removedAttachmentIds = useRef<string[]>([]);
 
   const handleGenerate = (setter: (val: string) => void) => {
     const pwd = generatePassword({
@@ -74,12 +118,84 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
     setter(pwd);
   };
 
+  // ── Attachment helpers ──────────────────────────────────────────────────
+  const handleAttachFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !dek) return;
+    setAttachmentError('');
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setAttachmentError(`File too large: max ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB`);
+      return;
+    }
+    setUploadingFile(true);
+    try {
+      const id = generateId();
+      await saveAttachment(id, file, dek);
+      const meta: VaultAttachment = {
+        id, name: file.name, mimeType: file.type || 'application/octet-stream',
+        size: file.size, createdAt: new Date().toISOString(),
+      };
+      setAttachments(a => [...a, meta]);
+    } catch (err) {
+      setAttachmentError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploadingFile(false);
+      if (attachmentInputRef.current) attachmentInputRef.current.value = '';
+    }
+  };
+
+  const handleDownloadAttachment = async (att: VaultAttachment) => {
+    if (!dek) return;
+    try {
+      const result = await loadAttachment(att.id, dek);
+      if (!result) return;
+      const url = URL.createObjectURL(result.blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = att.name; a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setAttachmentError('Failed to decrypt attachment');
+    }
+  };
+
+  const handleRemoveAttachment = (id: string) => {
+    setAttachments(a => a.filter(att => att.id !== id));
+    removedAttachmentIds.current.push(id);
+  };
+
+  // ── Custom field helpers ────────────────────────────────────────────────
+  const updateCustomField = (id: string, value: string) => {
+    setCustomFields(f => f.map(cf => cf.id === id ? { ...cf, value } : cf));
+  };
+
+  // When a custom template is selected, populate fields from its definition
+  const handleSelectTemplate = (templateId: string) => {
+    setCustomTypeId(templateId);
+    const tpl = customTemplates.find(t => t.id === templateId);
+    if (tpl) {
+      setCategory(tpl.defaultCategory);
+      const existing = new Map(customFields.map(f => [f.label, f.value]));
+      setCustomFields(tpl.fields.map(fd => ({
+        id: fd.id,
+        label: fd.label,
+        value: existing.get(fd.label) ?? '',
+        type: fd.type,
+      })));
+    }
+  };
+
   // Auto-set category when switching type
   const handleTypeChange = (newType: EntryType) => {
     setType(newType);
     if (newType === 'wifi') setCategory('Network');
     else if (newType === 'bank') setCategory('Finance');
     else if (newType === 'identity') setCategory('Personal');
+    else if (newType === 'passkey') setCategory('Personal');
+    else if (newType === 'custom') {
+      // Restore default category for selected template if any
+      const tpl = customTemplates.find(t => t.id === customTypeId);
+      if (tpl) setCategory(tpl.defaultCategory);
+    }
     else if (['Network', 'Finance'].includes(category)) setCategory('Personal');
   };
 
@@ -124,11 +240,28 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
       issueDate: type === 'identity' ? issueDate : undefined,
       expiryDate: type === 'identity' ? expiryDate : undefined,
       address: type === 'identity' ? address : undefined,
+      // Passkey fields
+      passkeyRpId:         type === 'passkey' ? passkeyRpId : undefined,
+      passkeyCredentialId: type === 'passkey' ? passkeyCredentialId : undefined,
+      passkeyUsername:     type === 'passkey' ? passkeyUsername : undefined,
+      passkeyDisplayName:  type === 'passkey' ? passkeyDisplayName : undefined,
+      passkeyPublicKey:    type === 'passkey' ? passkeyPublicKey : undefined,
+      passkeyAlgorithm:    type === 'passkey' ? passkeyAlgorithm : undefined,
+      passkeyBackedUp:     type === 'passkey' ? passkeyBackedUp : undefined,
+      // Custom fields
+      customTypeId: type === 'custom' ? customTypeId : undefined,
+      customFields: type === 'custom' ? customFields : undefined,
+      // Attachments
+      attachments,
       isFavorite: entry?.isFavorite || false,
       isCompromised: entry?.isCompromised || false,
     };
     if (mode === 'add') await addEntry(entryData);
     else if (entry) await updateEntry(entry.id, entryData);
+    // Clean up any attachments the user removed during editing
+    for (const id of removedAttachmentIds.current) {
+      await deleteAttachment(id).catch(() => {});
+    }
     setSaving(false);
     onClose();
   };
@@ -141,6 +274,8 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
     wifi: 'WiFi',
     bank: 'Bank',
     identity: 'Identity',
+    passkey: 'Passkey',
+    custom: 'Custom',
   };
 
   return createPortal(
@@ -176,7 +311,7 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
           <div>
             <label className="label-text">Entry Type</label>
             <div className="grid grid-cols-4 gap-2 mt-1.5">
-              {(['login', 'note', 'totp', 'apikey', 'wifi', 'bank', 'identity'] as EntryType[]).map(t => (
+              {(['login', 'note', 'totp', 'apikey', 'wifi', 'bank', 'identity', 'passkey', 'custom'] as EntryType[]).map(t => (
                 <button key={t} onClick={() => handleTypeChange(t)}
                   className="py-2 rounded-lg text-xs font-semibold transition-all"
                   style={{
@@ -211,18 +346,24 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
             <>
               <div>
                 <label className="label-text">Network Name (SSID)</label>
-                <input value={wifiSsid} onChange={e => setWifiSsid(e.target.value)}
-                  className="input-field mt-1.5 font-mono" placeholder="e.g. MyHomeNetwork_5G" />
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <input value={wifiSsid} onChange={e => setWifiSsid(e.target.value)}
+                    className="input-field flex-1 font-mono" placeholder="e.g. MyHomeNetwork_5G" />
+                  <PasteButton onPaste={setWifiSsid} />
+                </div>
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="label-text">WiFi Password</label>
-                  <button onClick={() => handleGenerate(setPassword)}
-                    className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg transition-all"
-                    style={{ color: 'var(--c-accent)', background: 'var(--c-accent-bgm)' }}>
-                    <Zap size={10} /> Generate
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <PasteButton onPaste={setPassword} />
+                    <button onClick={() => handleGenerate(setPassword)}
+                      className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg transition-all"
+                      style={{ color: 'var(--c-accent)', background: 'var(--c-accent-bgm)' }}>
+                      <Zap size={10} /> Generate
+                    </button>
+                  </div>
                 </div>
                 <div className="relative">
                   <input value={password} onChange={e => setPassword(e.target.value)}
@@ -577,7 +718,10 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
             <>
               {type === 'login' && (
                 <div>
-                  <label className="label-text">Username / Email</label>
+                  <div className="flex items-center justify-between">
+                    <label className="label-text">Username / Email</label>
+                    <PasteButton onPaste={setUsername} />
+                  </div>
                   <input value={username} onChange={e => setUsername(e.target.value)}
                     className="input-field mt-1.5 font-mono" placeholder="user@example.com" />
                 </div>
@@ -588,20 +732,26 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
                   <label className="label-text">
                     {type === 'apikey' ? 'API Key Name' : 'Password'}
                   </label>
-                  {type === 'login' && (
-                    <button onClick={() => handleGenerate(setPassword)}
-                      className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg transition-all"
-                      style={{ color: 'var(--c-accent)', background: 'var(--c-accent-bgm)' }}>
-                      <Zap size={10} /> Generate
-                    </button>
-                  )}
+                  <div className="flex items-center gap-1">
+                    {type !== 'apikey' && <PasteButton onPaste={setPassword} />}
+                    {type === 'login' && (
+                      <button onClick={() => handleGenerate(setPassword)}
+                        className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg transition-all"
+                        style={{ color: 'var(--c-accent)', background: 'var(--c-accent-bgm)' }}>
+                        <Zap size={10} /> Generate
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {type === 'apikey' ? (
                   <>
                     <input value={apiKeyName} onChange={e => setApiKeyName(e.target.value)}
                       className="input-field mt-1.5 mb-2" placeholder="e.g. OpenAI API Key" />
-                    <input value={apiKey} onChange={e => setApiKey(e.target.value)}
-                      className="input-field font-mono text-xs" placeholder="sk-..." />
+                    <div className="flex items-center gap-1.5">
+                      <input value={apiKey} onChange={e => setApiKey(e.target.value)}
+                        className="input-field flex-1 font-mono text-xs" placeholder="sk-..." />
+                      <PasteButton onPaste={setApiKey} />
+                    </div>
                   </>
                 ) : (
                   <>
@@ -632,7 +782,10 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
 
               {type === 'login' && (
                 <div>
-                  <label className="label-text">Website URL</label>
+                  <div className="flex items-center justify-between">
+                    <label className="label-text">Website URL</label>
+                    <PasteButton onPaste={setUrl} />
+                  </div>
                   <input value={url} onChange={e => setUrl(e.target.value)}
                     className="input-field mt-1.5 font-mono text-sm" placeholder="https://example.com" />
                 </div>
@@ -643,7 +796,10 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
           {/* ── TOTP Secret ── */}
           {type === 'totp' && (
             <div>
-              <label className="label-text">TOTP Secret Key</label>
+              <div className="flex items-center justify-between">
+                <label className="label-text">TOTP Secret Key</label>
+                <PasteButton onPaste={v => setTotpSecret(v.trim().toUpperCase())} />
+              </div>
               <input value={totpSecret} onChange={e => setTotpSecret(e.target.value.trim().toUpperCase())}
                 className="input-field mt-1.5 font-mono text-sm" placeholder="Base32 secret (e.g. JBSWY3DPEHPK3PXP)" />
               <p className="text-xs mt-1" style={{ color: 'var(--c-text-f)' }}>
@@ -652,9 +808,197 @@ export function EntryModal({ mode, entry, onClose }: EntryModalProps) {
             </div>
           )}
 
+          {/* ── Passkey Fields ── */}
+          {type === 'passkey' && (
+            <div className="space-y-3 pt-1">
+              <div className="flex items-center gap-2 py-2 px-3 rounded-lg"
+                style={{ background: 'var(--c-accent-bgm)', border: '1px solid var(--c-accent-bd)' }}>
+                <KeySquare size={14} color="var(--c-accent)" />
+                <p className="text-xs" style={{ color: 'var(--c-accent)' }}>
+                  Store passkey / FIDO2 credential metadata for documentation purposes.
+                </p>
+              </div>
+              <div>
+                <label className="label-text">Relying Party ID (RP ID) *</label>
+                <input value={passkeyRpId} onChange={e => setPasskeyRpId(e.target.value)}
+                  className="input-field mt-1.5" placeholder="e.g. github.com" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label-text">Username / Handle</label>
+                  <input value={passkeyUsername} onChange={e => setPasskeyUsername(e.target.value)}
+                    className="input-field mt-1.5" placeholder="e.g. john@example.com" />
+                </div>
+                <div>
+                  <label className="label-text">Display Name</label>
+                  <input value={passkeyDisplayName} onChange={e => setPasskeyDisplayName(e.target.value)}
+                    className="input-field mt-1.5" placeholder="e.g. John Doe" />
+                </div>
+              </div>
+              <div>
+                <label className="label-text">Credential ID</label>
+                <div className="flex items-center gap-2 mt-1.5">
+                  <input value={passkeyCredentialId} onChange={e => setPasskeyCredentialId(e.target.value)}
+                    className="input-field flex-1 font-mono text-xs" placeholder="Base64url-encoded credential ID" />
+                  <PasteButton onPaste={setPasskeyCredentialId} />
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between">
+                  <label className="label-text">Public Key (COSE / Base64)</label>
+                  <button onClick={() => setShowPasskeyPublicKey(p => !p)} className="text-xs" style={{ color: 'var(--c-text-f)' }}>
+                    {showPasskeyPublicKey ? <EyeOff size={13} /> : <Eye size={13} />}
+                  </button>
+                </div>
+                <textarea
+                  value={passkeyPublicKey}
+                  onChange={e => setPasskeyPublicKey(e.target.value)}
+                  className="input-field mt-1.5 font-mono text-xs resize-none"
+                  rows={3}
+                  placeholder="Paste encoded public key (optional, for reference)"
+                  style={{ filter: showPasskeyPublicKey ? 'none' : 'blur(4px)' }}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label-text">Algorithm</label>
+                  <select value={passkeyAlgorithm} onChange={e => setPasskeyAlgorithm(e.target.value)} className="input-field mt-1.5">
+                    <option value="ES256">ES256 (ECDSA P-256)</option>
+                    <option value="RS256">RS256 (RSA PKCS1)</option>
+                    <option value="EdDSA">EdDSA (Ed25519)</option>
+                    <option value="ES384">ES384</option>
+                    <option value="ES512">ES512</option>
+                  </select>
+                </div>
+                <div className="flex items-end pb-1">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={passkeyBackedUp} onChange={e => setPasskeyBackedUp(e.target.checked)}
+                      className="rounded" />
+                    <span className="text-sm" style={{ color: 'var(--c-text-m)' }}>Backed Up / Synced</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Custom Entry Fields ── */}
+          {type === 'custom' && (
+            <div className="space-y-3 pt-1">
+              {customTemplates.length === 0 ? (
+                <div className="text-center py-6 rounded-xl" style={{ border: '1px dashed var(--c-border-m)' }}>
+                  <LayoutTemplate size={24} color="var(--c-text-f)" className="mx-auto mb-2" />
+                  <p className="text-sm" style={{ color: 'var(--c-text-m)' }}>No custom templates yet.</p>
+                  <p className="text-xs mt-1" style={{ color: 'var(--c-text-f)' }}>
+                    Go to Settings → Custom Entry Types to create one.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="label-text">Entry Template</label>
+                    <select value={customTypeId} onChange={e => handleSelectTemplate(e.target.value)} className="input-field mt-1.5">
+                      <option value="">— Select a template —</option>
+                      {customTemplates.map(t => (
+                        <option key={t.id} value={t.id}>{t.icon} {t.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {customFields.map(cf => (
+                    <div key={cf.id}>
+                      <label className="label-text">{cf.label || 'Field'}</label>
+                      {cf.type === 'textarea' ? (
+                        <textarea
+                          value={cf.value}
+                          onChange={e => updateCustomField(cf.id, e.target.value)}
+                          className="input-field mt-1.5 resize-none text-sm" rows={3}
+                        />
+                      ) : cf.type === 'password' ? (
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <input
+                            type="password"
+                            value={cf.value}
+                            onChange={e => updateCustomField(cf.id, e.target.value)}
+                            className="input-field flex-1"
+                          />
+                          <PasteButton onPaste={v => updateCustomField(cf.id, v)} />
+                        </div>
+                      ) : (
+                        <input
+                          type={cf.type === 'url' ? 'url' : 'text'}
+                          value={cf.value}
+                          onChange={e => updateCustomField(cf.id, e.target.value)}
+                          className="input-field mt-1.5"
+                        />
+                      )}
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── Attachments ── */}
+          {dek && (
+            <div className="space-y-2 pt-1">
+              <div className="flex items-center justify-between">
+                <label className="label-text flex items-center gap-1.5">
+                  <Paperclip size={13} /> Attachments
+                </label>
+                <button
+                  type="button"
+                  onClick={() => attachmentInputRef.current?.click()}
+                  disabled={uploadingFile}
+                  className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg transition-all"
+                  style={{ color: 'var(--c-accent)', background: 'var(--c-accent-bgm)', border: '1px solid var(--c-accent-bd)' }}
+                >
+                  <Plus size={11} /> {uploadingFile ? 'Uploading…' : 'Attach File'}
+                </button>
+                <input
+                  ref={attachmentInputRef}
+                  type="file"
+                  className="hidden"
+                  onChange={handleAttachFile}
+                />
+              </div>
+              {attachmentError && (
+                <p className="text-xs px-2 py-1 rounded" style={{ color: '#EF4444', background: 'rgba(239,68,68,0.08)' }}>
+                  {attachmentError}
+                </p>
+              )}
+              {attachments.length > 0 && (
+                <div className="space-y-1.5">
+                  {attachments.map(att => (
+                    <div key={att.id}
+                      className="flex items-center gap-3 px-3 py-2 rounded-xl"
+                      style={{ background: 'var(--c-input-bg)', border: '1px solid var(--c-border-m)' }}>
+                      <Paperclip size={13} color="var(--c-text-f)" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm truncate" style={{ color: 'var(--c-text)' }}>{att.name}</p>
+                        <p className="text-xs" style={{ color: 'var(--c-text-f)' }}>
+                          {att.size < 1024 ? `${att.size} B` : att.size < 1024 * 1024 ? `${(att.size / 1024).toFixed(1)} KB` : `${(att.size / (1024 * 1024)).toFixed(1)} MB`}
+                        </p>
+                      </div>
+                      <button onClick={() => handleDownloadAttachment(att)}
+                        className="p-1.5 rounded-lg transition-colors" style={{ color: 'var(--c-text-m)' }}>
+                        <Download size={14} />
+                      </button>
+                      <button onClick={() => handleRemoveAttachment(att.id)}
+                        className="p-1.5 rounded-lg transition-colors" style={{ color: '#EF4444' }}>
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Notes */}
           <div>
-            <label className="label-text">Notes</label>
+            <div className="flex items-center justify-between">
+              <label className="label-text">Notes</label>
+              <PasteButton onPaste={v => setNotes(prev => prev ? prev + '\n' + v : v)} />
+            </div>
             <textarea value={notes} onChange={e => setNotes(e.target.value)}
               className="input-field mt-1.5 font-mono text-sm resize-none" rows={3}
               placeholder="Additional notes, recovery codes, etc." />

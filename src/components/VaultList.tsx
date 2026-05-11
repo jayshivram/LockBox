@@ -12,7 +12,7 @@ import { checkStrength } from '../utils/strength';
 import { copyToClipboard, checkPasswordBreach } from '../utils/crypto';
 import type { VaultEntry, Category } from '../types';
 import { EntryModal } from './EntryModal';
-import { requireInlineBiometric } from '../utils/capacitor';
+import { requireInlineBiometric, triggerHaptic } from '../utils/capacitor';
 
 type SortOption = VaultStore['sortBy'];
 
@@ -23,6 +23,18 @@ function formatAge(isoDate: string): string {
   if (days < 30) return `Updated ${days}d ago`;
   if (days < 365) return `Updated ${Math.floor(days / 30)}mo ago`;
   return `Updated ${Math.floor(days / 365)}y ago`;
+}
+
+function formatLastUsed(isoDate: string): string {
+  const ms = Date.now() - new Date(isoDate).getTime();
+  const secs = Math.floor(ms / 1000);
+  const days = Math.floor(ms / 86_400_000);
+  if (secs < 60) return 'Used just now';
+  if (days === 0) return 'Used today';
+  if (days === 1) return 'Used yesterday';
+  if (days < 30) return `Used ${days}d ago`;
+  if (days < 365) return `Used ${Math.floor(days / 30)}mo ago`;
+  return `Used ${Math.floor(days / 365)}y ago`;
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -72,6 +84,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
     if (!passed) return;
 
     copyToClipboard(text, settings.clipboardClearSeconds * 1000);
+    triggerHaptic();
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -928,6 +941,7 @@ export function VaultList() {
     entries, searchQuery, setSearch, selectedCategory, setCategory,
     selectedEntryId, setSelectedEntry, activeFilterType, setActiveFilterType,
     sortBy, setSortBy, openAddEntryModal, clearAddEntryModal, settings, setView,
+    updateLastUsed,
   } = useVaultStore();
   const [addOpen, setAddOpen] = useState(false);
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
@@ -937,6 +951,7 @@ export function VaultList() {
     setSelectedEntry(id);
     setMobileShowDetail(true);
     history.pushState({ lockboxDetail: true }, '');
+    updateLastUsed(id);
   };
   const hideDetail = useCallback(() => {
     setMobileShowDetail(false);
@@ -985,6 +1000,11 @@ export function VaultList() {
       case 'name-desc': return b.name.localeCompare(a.name);
       case 'newest':    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
       case 'oldest':    return new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
+      case 'last-used': {
+        const ta = a.lastUsedAt ? new Date(a.lastUsedAt).getTime() : 0;
+        const tb = b.lastUsedAt ? new Date(b.lastUsedAt).getTime() : 0;
+        return tb - ta;
+      }
       case 'strength': {
         const sa = a.password ? checkStrength(a.password).score : -1;
         const sb = b.password ? checkStrength(b.password).score : -1;
@@ -1007,6 +1027,7 @@ export function VaultList() {
     { value: 'name-desc', label: 'Z → A',     icon: <SortDesc size={12} /> },
     { value: 'newest',    label: 'Newest',    icon: <Clock size={12} /> },
     { value: 'oldest',    label: 'Oldest',    icon: <Clock size={12} /> },
+    { value: 'last-used', label: 'Last Used', icon: <Clock size={12} /> },
     { value: 'strength',  label: 'Strength',  icon: <Shield size={12} /> },
   ];
 
@@ -1097,11 +1118,12 @@ export function VaultList() {
           ) : (
             <div className="space-y-1">
               {sorted.map(entry => {
-                const quickCopyText = entry.type === 'wifi' ? (entry.wifiSsid || '') : (entry.username || '');
                 const ageDays = entry.password
                   ? Math.floor((Date.now() - new Date(entry.updatedAt).getTime()) / 86_400_000)
                   : 0;
                 const ageWarning = settings.passwordAgeDays > 0 && entry.password && ageDays >= settings.passwordAgeDays;
+                // Primary secret for quick copy: prefer password, fall back to SSID
+                const quickCopySecret = entry.password || (entry.type === 'wifi' ? entry.wifiSsid : undefined);
                 return (
                   <div
                     key={entry.id}
@@ -1125,19 +1147,24 @@ export function VaultList() {
                           ? (entry.wifiSsid || entry.username || 'WiFi')
                           : (entry.username || entry.url || entry.type)}
                       </p>
-                      <p className="text-xs" style={{ color: 'var(--c-text-g)' }}>{formatAge(entry.updatedAt)}</p>
+                      <p className="text-xs" style={{ color: 'var(--c-text-g)' }}>
+                        {entry.lastUsedAt ? formatLastUsed(entry.lastUsedAt) : formatAge(entry.updatedAt)}
+                      </p>
                     </div>
                     <div className="flex-shrink-0 flex flex-col items-center gap-1">
-                      {/* Quick copy for username / SSID — visible on hover */}
-                      {quickCopyText && (
+                      {/* Quick copy primary secret — visible on hover / always on mobile */}
+                      {quickCopySecret && (
                         <button
-                          onClick={e => {
+                          onClick={async e => {
                             e.stopPropagation();
-                            copyToClipboard(quickCopyText, settings.clipboardClearSeconds * 1000);
+                            const passed = await requireInlineBiometric(settings.biometricEnabled);
+                            if (!passed) return;
+                            copyToClipboard(quickCopySecret, settings.clipboardClearSeconds * 1000);
+                            triggerHaptic();
                           }}
                           className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded"
                           style={{ color: 'var(--c-text-m)' }}
-                          title={`Copy ${entry.type === 'wifi' ? 'SSID' : 'username'}`}>
+                          title={`Quick copy ${entry.password ? 'password' : 'SSID'}`}>
                           <Copy size={11} />
                         </button>
                       )}

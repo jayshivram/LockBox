@@ -74,6 +74,11 @@ export function BiometricGate({ onSuccess, onFallback, isSoftLock }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    // Used to debounce the biometric trigger when the app briefly becomes
+    // "active" in the Android recents switcher. Without this debounce, Android
+    // forces the app to foreground to show the biometric dialog — causing the
+    // aggressive full-screen popup while the user is just browsing recents.
+    const resumeTimer = { current: null as ReturnType<typeof setTimeout> | null };
 
     const init = async () => {
       // Pre-flight: verify the sensor is actually ready before firing the prompt.
@@ -95,8 +100,21 @@ export function BiometricGate({ onSuccess, onFallback, isSoftLock }: Props) {
           // Wait for the app to come back to the foreground before triggering.
           const handle = await App.addListener('appStateChange', (s) => {
             if (s.isActive && !cancelled) {
-              triggerBiometric();
-              handle.remove();
+              // Debounce: wait 600 ms to confirm the app is truly in the
+              // foreground (not just briefly visible in the recents switcher).
+              if (resumeTimer.current) clearTimeout(resumeTimer.current);
+              resumeTimer.current = setTimeout(() => {
+                if (!cancelled) {
+                  handle.remove();
+                  triggerBiometric();
+                }
+              }, 600);
+            } else if (!s.isActive) {
+              // App went back to background — cancel any pending trigger.
+              if (resumeTimer.current) {
+                clearTimeout(resumeTimer.current);
+                resumeTimer.current = null;
+              }
             }
           });
           return;
@@ -108,7 +126,10 @@ export function BiometricGate({ onSuccess, onFallback, isSoftLock }: Props) {
     };
 
     init();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (resumeTimer.current) clearTimeout(resumeTimer.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
